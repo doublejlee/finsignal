@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables (API keys later)
+.env
+
+# Data files
+data/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+
+# Model cache (HuggingFace downloads models here, large files)
+.cache/

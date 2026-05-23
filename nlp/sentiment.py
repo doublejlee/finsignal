@@ -1,37 +1,9 @@
 from transformers import pipeline
-import re
-from nlp.ticker_extractor import TICKER_DICT
+from nlp.chunker import get_sentences_for_ticker
+from collections import Counter
 
-# Load FinBERT once when the module is imported
-# This takes a few seconds the first time as it downloads the model
 classifier = pipeline("text-classification", model="ProsusAI/finbert")
 
-def get_sentences_for_ticker(text, ticker):
-    """Extract sentences that mention a specific ticker from the transcript"""
-    # Find all company names that map to this ticker
-    company_names = [name for name, tick in TICKER_DICT.items() if tick == ticker]
-    
-    # Split into sentences on . ! ?
-    sentences = re.split(r'[.!?]+', text)
-    
-    relevant_sentences = []
-    for sentence in sentences:
-        sentence_stripped = sentence.strip()
-        if not sentence_stripped:
-            continue
-        
-        # Check if sentence mentions ticker in $TICKER format
-        if f"${ticker}" in sentence:
-            relevant_sentences.append(sentence_stripped)
-        else:
-            # Check if sentence mentions any company name (case-insensitive)
-            sentence_lower = sentence.lower()
-            for company in company_names:
-                if company in sentence_lower:
-                    relevant_sentences.append(sentence_stripped)
-                    break
-    
-    return relevant_sentences
 
 def analyse_sentiment_for_ticker(text, ticker):
     sentences = get_sentences_for_ticker(text, ticker)
@@ -39,20 +11,50 @@ def analyse_sentiment_for_ticker(text, ticker):
     if not sentences:
         return "neutral", 0.0, []
     
-    # Run FinBERT on each relevant sentence
     results = []
     for sentence in sentences:
+        if len(sentence.split()) < 8:
+            continue
         trimmed = sentence[:512]
         result = classifier(trimmed)
-        results.append(result[0])
+        # Only keep high confidence results - low confidence is usually noise
+        if result[0]["score"] > 0.6:
+            results.append(result[0])
     
-    # Average the scores grouped by label
-    from collections import Counter
-    labels = [r["label"] for r in results]
-    most_common_label = Counter(labels).most_common(1)[0][0]
-    avg_score = sum(r["score"] for r in results) / len(results)
+    if not results:
+        return "neutral", 0.0, sentences
+
+    # Calculate weighted directional score instead of just counting labels
+    # Later sentences get higher weight (recency bias)
+    total_weight = 0
+    weighted_score = 0
     
-    return most_common_label, round(avg_score, 2), sentences
+    for i, result in enumerate(results):
+        # Weight increases for later sentences
+        weight = 1 + (2 * (i / len(results)))
+        label = result["label"]
+        score = result["score"]
+        
+        if label == "positive":
+            direction = score
+        elif label == "negative":
+            direction = -score
+        else:
+            direction = 0
+            
+        weighted_score += direction * weight
+        total_weight += weight
+    
+    final_score = weighted_score / total_weight
+    
+    if final_score > 0.05:
+        label = "positive"
+    elif final_score < -0.05:
+        label = "negative"
+    else:
+        label = "neutral"
+    
+    return label, round(abs(final_score), 2), sentences
 
 if __name__ == "__main__":
     from ingestion.youtube_fetcher import get_transcript
@@ -65,3 +67,28 @@ if __name__ == "__main__":
     for ticker in tickers:
         label, score, sentences = analyse_sentiment_for_ticker(text, ticker)
         print(f"{ticker}: {label} ({score}) — based on {len(sentences)} sentences")
+    
+    from nlp.chunker import get_sentences_for_ticker
+    sentences = get_sentences_for_ticker(text, "NPHS")
+    print("\nNPHS weighted calculation:")
+    filtered = []
+    for sentence in sentences:
+        if len(sentence.split()) < 8:
+            continue
+        result = classifier(sentence[:512])
+        if result[0]["score"] > 0.6:
+            filtered.append(result[0])
+            
+    total_weight = 0
+    weighted_score = 0
+    for i, result in enumerate(filtered):
+        weight = 1 + (2 * (i / len(filtered)))
+        label = result["label"]
+        score = result["score"]
+        direction = score if label == "positive" else -score if label == "negative" else 0
+        weighted_score += direction * weight
+        total_weight += weight
+        print(f"  i={i} weight={weight:.2f} label={label} score={score:.2f} direction={direction:.2f}")
+    
+    print(f"\n  final_score = {weighted_score/total_weight:.4f}")
+    

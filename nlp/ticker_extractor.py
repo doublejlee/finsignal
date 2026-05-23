@@ -5,22 +5,25 @@ TICKER_DICT = {
     "google": "GOOGL", "alphabet": "GOOGL", "amazon": "AMZN",
     "meta": "META", "tesla": "TSLA", "amd": "AMD",
     "netflix": "NFLX", "palantir": "PLTR", "nphase": "NPHS",
-    "enphase": "ENPH", "intel": "INTC", "qualcomm": "QCOM",
+    "enphase": "ENPH", "qualcomm": "QCOM",
     "broadcom": "AVGO", "snowflake": "SNOW", "coinbase": "COIN",
-    "shopify": "SHOP", "uber": "UBER", "airbnb": "ABNB"
+    "shopify": "SHOP", "airbnb": "ABNB"
 }
+
+# These words are too ambiguous as plain text — only match via $TICKER format
+AMBIGUOUS_TICKERS = {"INTC", "UBER", "AMD"}
 
 def extract_tickers(text):
     found = set()
 
-    # catch $TICKER format
     regex_matches = re.findall(r'\$([A-Z]{1,5})', text)
     for match in regex_matches:
         found.add(match)
 
-    # catch company names from dictionary
     text_lower = text.lower()
     for name, ticker in TICKER_DICT.items():
+        if ticker in AMBIGUOUS_TICKERS:
+            continue
         if name in text_lower:
             found.add(ticker)
 
