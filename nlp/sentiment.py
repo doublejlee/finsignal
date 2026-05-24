@@ -68,27 +68,5 @@ if __name__ == "__main__":
         label, score, sentences = analyse_sentiment_for_ticker(text, ticker)
         print(f"{ticker}: {label} ({score}) — based on {len(sentences)} sentences")
     
-    from nlp.chunker import get_sentences_for_ticker
-    sentences = get_sentences_for_ticker(text, "NPHS")
-    print("\nNPHS weighted calculation:")
-    filtered = []
-    for sentence in sentences:
-        if len(sentence.split()) < 8:
-            continue
-        result = classifier(sentence[:512])
-        if result[0]["score"] > 0.6:
-            filtered.append(result[0])
-            
-    total_weight = 0
-    weighted_score = 0
-    for i, result in enumerate(filtered):
-        weight = 1 + (2 * (i / len(filtered)))
-        label = result["label"]
-        score = result["score"]
-        direction = score if label == "positive" else -score if label == "negative" else 0
-        weighted_score += direction * weight
-        total_weight += weight
-        print(f"  i={i} weight={weight:.2f} label={label} score={score:.2f} direction={direction:.2f}")
-    
-    print(f"\n  final_score = {weighted_score/total_weight:.4f}")
+
     

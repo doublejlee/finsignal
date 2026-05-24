@@ -1,0 +1,139 @@
+from db.init import get_connection
+from datetime import datetime
+
+def get_or_create_creator(channel_id: str, name: str, subscriber_count: int = None) -> int:
+    """Get or create creator, returns creator_id."""
+    conn = get_connection()
+
+    # Check if exists
+    result = conn.execute(
+        "SELECT id FROM creators WHERE channel_id = ?",
+        [channel_id]
+    ).fetchall()
+
+    if result:
+        return result[0][0]
+
+    # Create new
+    conn.execute(
+        "INSERT INTO creators (channel_id, name, subscriber_count) VALUES (?, ?, ?)",
+        [channel_id, name, subscriber_count]
+    )
+    conn.commit()
+
+    result = conn.execute(
+        "SELECT id FROM creators WHERE channel_id = ?",
+        [channel_id]
+    ).fetchall()
+
+    return result[0][0]
+
+def get_or_create_video(creator_id: int, video_id: str, title: str, published_at: datetime = None) -> int:
+    """Get or create video, returns video_id (database id)."""
+    conn = get_connection()
+
+    result = conn.execute(
+        "SELECT id FROM videos WHERE video_id = ?",
+        [video_id]
+    ).fetchall()
+
+    if result:
+        return result[0][0]
+
+    conn.execute(
+        "INSERT INTO videos (creator_id, video_id, title, published_at) VALUES (?, ?, ?, ?)",
+        [creator_id, video_id, title, published_at]
+    )
+    conn.commit()
+
+    result = conn.execute(
+        "SELECT id FROM videos WHERE video_id = ?",
+        [video_id]
+    ).fetchall()
+
+    return result[0][0]
+
+def store_ticker_sentiment(video_id: int, ticker: str, label: str, directional_score: float, sentence_count: int):
+    """Store aggregated ticker sentiment for a video."""
+    conn = get_connection()
+
+    conn.execute(
+        """
+        INSERT INTO ticker_sentiments (video_id, ticker, label, directional_score, sentence_count)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(video_id, ticker) DO UPDATE SET
+            label = excluded.label,
+            directional_score = excluded.directional_score,
+            sentence_count = excluded.sentence_count
+        """,
+        [video_id, ticker, label, directional_score, sentence_count]
+    )
+    conn.commit()
+
+def store_transcript_segments(video_id: int, ticker: str, sentences: list, label: str, score: float):
+    """
+    Store raw transcript segments.
+    sentences: list of sentence strings that mention the ticker
+    """
+    conn = get_connection()
+
+    for sentence in sentences:
+        conn.execute(
+            """
+            INSERT INTO transcript_segments (video_id, ticker, sentence, label, score)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [video_id, ticker, sentence, label, score]
+        )
+
+    conn.commit()
+
+def get_top_tickers(limit: int = 10, direction: str = "bullish") -> list:
+    """Get top bullish or bearish tickers across all videos."""
+    conn = get_connection()
+
+    if direction == "bullish":
+        query = """
+            SELECT ticker, SUM(directional_score) as total_score, COUNT(*) as video_count
+            FROM ticker_sentiments
+            WHERE directional_score > 0
+            GROUP BY ticker
+            ORDER BY total_score DESC
+            LIMIT ?
+        """
+    else:  # bearish
+        query = """
+            SELECT ticker, SUM(directional_score) as total_score, COUNT(*) as video_count
+            FROM ticker_sentiments
+            WHERE directional_score < 0
+            GROUP BY ticker
+            ORDER BY total_score ASC
+            LIMIT ?
+        """
+
+    return conn.execute(query, [limit]).fetchall()
+
+def get_ticker_sentiment_over_time(ticker: str):
+    """Get sentiment trend for a ticker over time."""
+    conn = get_connection()
+
+    return conn.execute("""
+        SELECT v.published_at, ts.label, ts.directional_score, ts.sentence_count
+        FROM ticker_sentiments ts
+        JOIN videos v ON ts.video_id = v.id
+        WHERE ts.ticker = ?
+        ORDER BY v.published_at ASC
+    """, [ticker]).fetchall()
+
+def get_creators_mentioning_ticker(ticker: str):
+    """Get creators who mentioned a ticker and their sentiment."""
+    conn = get_connection()
+
+    return conn.execute("""
+        SELECT DISTINCT c.name, c.channel_id, ts.label, ts.directional_score
+        FROM ticker_sentiments ts
+        JOIN videos v ON ts.video_id = v.id
+        JOIN creators c ON v.creator_id = c.id
+        WHERE ts.ticker = ?
+        ORDER BY ts.directional_score DESC
+    """, [ticker]).fetchall()
