@@ -3,6 +3,7 @@ from nlp.ticker_extractor import extract_tickers
 from nlp.sentiment import analyse_sentiment_for_ticker
 from db.storage import get_or_create_creator, get_or_create_video, store_ticker_sentiment, store_transcript_segments
 from db.init import init_schema
+import time
 
 def directional_score(label, score):
     if label == "positive":
@@ -12,7 +13,7 @@ def directional_score(label, score):
     else:
         return 0
 
-def analyse_video(video_id, channel_id="unknown", creator_name="unknown"):
+def analyse_video(video_id, channel_id="unknown", creator_name="unknown", title="unknown", published_at=None):
     print(f"\nFetching transcript for video: {video_id}")
     text = get_transcript(video_id)
 
@@ -22,7 +23,7 @@ def analyse_video(video_id, channel_id="unknown", creator_name="unknown"):
 
     # Store creator and video in database
     creator_id = get_or_create_creator(channel_id, creator_name)
-    db_video_id = get_or_create_video(creator_id, video_id, title="unknown")
+    db_video_id = get_or_create_video(creator_id, video_id, title=title, published_at=published_at)
 
     results = []
     for ticker in tickers:
@@ -50,6 +51,36 @@ def analyse_video(video_id, channel_id="unknown", creator_name="unknown"):
 
     return results
 
+
 if __name__ == "__main__":
+    from ingestion.channel_fetcher import get_recent_videos
+    
     init_schema()
-    analyse_video("Hl8sgbmBF98", channel_id="UCGy7SkBjcIAgTiwkXEtPnYg", creator_name="Meet Kevin")
+    
+    # Channels to track
+    channels = [
+    {"channel_id": "UCUvvj5lwue7PspotMDjk5UA", "name": "Meet Kevin"},
+    {"channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg", "name": "Andrei Jikh"},
+    {"channel_id": "UCbta0n8i6Rljh0obO7HzG9A", "name": "Joseph Carlson"},
+]
+    
+    for channel in channels:
+        print(f"\n{'='*50}")
+        print(f"Processing channel: {channel['name']}")
+        print(f"{'='*50}")
+        
+        videos = get_recent_videos(channel["channel_id"], max_results=5)
+        
+        
+        for video in videos:
+            try:
+             analyse_video(video["video_id"],
+                           channel_id=channel["channel_id"],
+                           creator_name=channel["name"],
+                           title=video["title"],
+                           published_at=video["published_at"]
+                           )
+             time.sleep(5)  # wait 2 seconds between videos
+            except Exception as e:
+             print(f"Skipping {video['video_id']}: {e}")
+             continue
