@@ -127,9 +127,9 @@ streamlit run dashboard/app.py
       creator accuracy backtesting
 - [x] **Phase 3** — FastAPI backend, split architecture (local ingestion + cloud
       serving), deployed dashboard (Streamlit Cloud) and API (Render)
-- [~] **Phase 4** — "Ask FinSignal" RAG: semantic retrieval over creator sentences +
-      grounded Groq answers with citations. Local MVP done; cloud serving (torch-free
-      query embedding) pending.
+- [x] **Phase 4** — "Ask FinSignal" RAG: semantic retrieval over creator sentences +
+      grounded Groq answers with citations. Cloud serving via HuggingFace Inference API
+      (torch-free); falls back to local sentence-transformers when HF is unreachable.
 - [~] **Phase 5** — Creator screening: benchmark-relative backtest + Wilson-bound
       ranking with an eligibility gate. Scoring/surfacing done; promotion and a deeper
       candidate pool (out-of-sample validation) pending.
@@ -251,3 +251,8 @@ naturally as videos age.
   Phase 3.
 - **Small sample sizes** make per-ticker and per-creator metrics noisy until more
   videos are ingested.
+- **Context-window ticker misattribution in RAG citations.** The chunker stores ±1
+  neighboring sentences under the adjacent ticker, not the ticker the sentence is
+  actually about. A sentence clearly discussing Nvidia can surface in RAG labeled
+  "on GOOGL" if it happened to neighbor a Google mention. Fixing this requires an
+  `is_context` flag on `transcript_segments` to distinguish primary vs. context rows.
