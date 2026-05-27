@@ -1,0 +1,6 @@
+# Disable Streamlit's module/file watcher. The "Ask FinSignal" feature imports
+# sentence-transformers -> transformers, whose lazy vision submodules import
+# torchvision (not installed). The watcher walking them floods the console with
+# harmless ModuleNotFoundError tracebacks. We don't need hot-reload here.
+[server]
+fileWatcherType = "none"

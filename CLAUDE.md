@@ -25,6 +25,10 @@ python refresh.py
 # API — serve stored analytics as JSON (run from repo root; interactive docs at /docs)
 uvicorn api.main:app --reload
 
+# RAG — embed stored sentences (local, uses torch), then ask grounded questions
+python -m nlp.backfill_embeddings
+python -m nlp.rag "what is the bull case for NVDA?"
+
 # Dashboard
 streamlit run dashboard/app.py
 
@@ -76,30 +80,34 @@ ingestion/ → nlp/ → db/ → (future) api/dashboard
 - `sentiment.py` — FinBERT (`ProsusAI/finbert`) scores each sentence; filters out sentences <8 words or confidence <0.6; applies recency weighting (`weight = 1 + 2*(i/n)`) so later sentences carry more influence.
 - `topic_model.py` — sends ticker-relevant sentences to Groq (Llama 3.3 70B) to extract 3 short reason phrases explaining the sentiment. Sentences with <8 words are filtered; fewer than 3 remaining returns `["insufficient data"]` without calling the API.
 - `backfill_reasons.py` — offline batch runner for `topic_model`. Reads sentences from `transcript_segments`, populates `ticker_reasons`, skips already-done pairs, sleeps 2s between calls for rate limits.
+- `backfill_embeddings.py` — embeds every `transcript_segments` sentence with `all-MiniLM-L6-v2` (normalized) into `sentence_embeddings`. Resumable. Local-only (needs torch).
+- `rag.py` — retrieval-augmented Q&A. `retrieve()` embeds the query, ranks stored sentences by cosine (brute force over all vectors, deduped by sentence), returns top-k; `answer()` feeds them to Groq for a grounded answer with inline citations. Query embedding uses sentence-transformers locally; Phase 4b will swap to a hosted embedding API so the cloud serving layer stays torch-free.
 
 **db/**
-- `init.py` — DuckDB schema (6 tables + indexes). DB file lives at `db/finsignal.duckdb`. Each function opens a new connection via `get_connection()`.
-- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, and per-creator backtest accuracy.
+- `init.py` — DuckDB schema (7 tables + indexes). DB file lives at `db/finsignal.duckdb`. Each function opens a new connection via `get_connection()`.
+- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, per-creator backtest accuracy, and the creator-screening leaderboard (`get_screening_leaderboard`: beat-SPY rate ranked by Wilson lower bound, with a min-calls eligibility gate).
 
 **main.py** — orchestrates the pipeline: for each channel, fetch recent videos, run `analyse_video()` per video which calls ingestion → NLP → storage in sequence. 5-second sleep between videos to avoid rate limits.
 
 **api/**
-- `main.py` — FastAPI app, a thin read layer over `db/storage.py`. Endpoints: `/consensus`, `/tickers/top`, `/tickers/{ticker}/trend`, `/tickers/{ticker}/creators`, `/reasons`, `/creators/accuracy`. DataFrame results are round-tripped through `df.to_json` to native JSON types; tuple results are mapped to named dicts. Holds the DuckDB file, so don't run it alongside the pipeline.
+- `main.py` — FastAPI app, a thin read layer over `db/storage.py`. Endpoints: `/consensus`, `/tickers/top`, `/tickers/{ticker}/trend`, `/tickers/{ticker}/creators`, `/reasons`, `/creators/accuracy`, `/ask`, `/screen`. DataFrame results are round-tripped through `df.to_json` to native JSON types; tuple results are mapped to named dicts. `/ask` lazy-imports `nlp.rag` so the lightweight cloud deploy (no torch) still imports and serves the other endpoints; it degrades to an "unavailable" message there. Holds the DuckDB file, so don't run it alongside the pipeline.
 
-**backtest.py** (repo root) — creator accuracy backtest. For each non-neutral `ticker_sentiments` call, fetches the stock's price at the video date vs `HORIZON_DAYS` (30) later via yfinance, scores raw-direction correctness (bullish=price rose, bearish=price fell), and stores per-call rows in `backtest_results`. Skips calls whose horizon hasn't elapsed yet (not enough future data) and groups price fetches by ticker (one yfinance call per ticker, not per call). Idempotent via upsert. Requires `yfinance`.
+**backtest.py** (repo root) — creator accuracy backtest. For each non-neutral `ticker_sentiments` call, fetches the stock's price at the video date vs `HORIZON_DAYS` (30) later via yfinance, scores raw-direction correctness (bullish=price rose, bearish=price fell), and stores per-call rows in `backtest_results`. Also fetches SPY once and records each call's benchmark return and whether it beat the benchmark (`beat_benchmark`) — the metric the Phase 5 screening leaderboard ranks on. Skips calls whose horizon hasn't elapsed yet (not enough future data) and groups price fetches by ticker (one yfinance call per ticker, not per call). Idempotent via upsert. Requires `yfinance`.
 
 ## DuckDB schema
 
 ```
-creators (id, channel_id UNIQUE, name, subscriber_count, created_at)
+creators (id, channel_id UNIQUE, name, subscriber_count, status['candidate'|'tracked'], created_at)
   └── videos (id, creator_id FK, video_id UNIQUE, title, published_at, created_at)
         └── ticker_sentiments (id, video_id FK, ticker, label, directional_score, sentence_count)
               UNIQUE(video_id, ticker) — upserts on reprocess
         └── transcript_segments (id, video_id FK, ticker, sentence, label, score)
         └── ticker_reasons (id, video_id FK, ticker, reason)
               populated offline by backfill_reasons.py; delete-then-insert per (video, ticker)
-        └── backtest_results (id, video_id FK, ticker, horizon_days, call, return_pct, correct)
+        └── backtest_results (id, video_id FK, ticker, horizon_days, call, return_pct, correct, benchmark_return_pct, beat_benchmark)
               UNIQUE(video_id, ticker, horizon_days) — populated by backtest.py, upserts on rerun
+        └── sentence_embeddings (id, segment_id FK → transcript_segments, embedding FLOAT[384])
+              UNIQUE(segment_id) — populated by backfill_embeddings.py for RAG retrieval
 ```
 
 `directional_score` is signed: positive = bullish, negative = bearish (range roughly −1 to +1). `ticker_sentiments.label` and `score` reflect the per-video aggregate; `transcript_segments` stores one row per raw sentence for drill-down.

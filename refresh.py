@@ -18,16 +18,19 @@ def run(cmd):
         sys.exit(result.returncode)
 
 if __name__ == "__main__":
-    print("FinSignal refresh — runs ingestion, reason extraction, and backtest.\n")
+    print("FinSignal refresh — ingestion, reasons, backtest, and RAG embeddings.\n")
 
-    input("1/3  Turn the VPN ON (YouTube needs it), then press Enter...")
+    input("1/4  Turn the VPN ON (YouTube needs it), then press Enter...")
     run(["main.py"])
 
-    input("\n2/3  Turn the VPN OFF (Groq blocks VPN IPs), then press Enter...")
+    input("\n2/4  Turn the VPN OFF (Groq blocks VPN IPs), then press Enter...")
     run(["-m", "nlp.backfill_reasons"])
 
-    print("\n3/3  Backtest (no VPN needed)...")
+    print("\n3/4  Backtest (no VPN needed)...")
     run(["backtest.py"])
+
+    print("\n4/4  Embedding new sentences for RAG (no VPN needed)...")
+    run(["-m", "nlp.backfill_embeddings"])
 
     print("\nDone. To update the live dashboard:")
     print("  git add db/finsignal.duckdb && git commit -m 'data refresh' && git push")

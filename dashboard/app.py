@@ -4,12 +4,32 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.init import get_connection
-from db.storage import get_consensus_scores, get_reasons_by_ticker, get_creator_accuracy
+from db.storage import get_consensus_scores, get_reasons_by_ticker, get_creator_accuracy, get_screening_leaderboard
 
 st.set_page_config(page_title="FinSignal", layout="wide")
 st.title("FinSignal — Financial Sentiment Dashboard")
 
 conn = get_connection()
+
+# Ask FinSignal (RAG)
+st.subheader("Ask FinSignal")
+st.caption("Ask in plain English — answered from creator transcripts, with sources")
+question = st.text_input("e.g. Why is Netflix a good investment?", key="ask")
+if question:
+    with st.spinner("Thinking..."):
+        try:
+            from nlp.rag import answer  # lazy: needs the embedding model (local only for now)
+            result = answer(question)
+            st.markdown(result["answer"])
+            with st.expander(f"Sources ({len(result['citations'])})"):
+                for h in result["citations"]:
+                    st.markdown(f"**[{h['number']}]** {h['creator']} on **{h['ticker']}** — {h['sentence']}")
+        except ImportError:
+            st.info("Ask FinSignal runs locally only for now (the cloud deploy omits the embedding model).")
+        except Exception as e:
+            st.error(f"Couldn't answer: {e}")
+
+st.divider()
 
 # Creator accuracy
 st.subheader("Creator Accuracy (30-day horizon)")
@@ -19,6 +39,18 @@ if accuracy.empty:
     st.info("No backtest data yet — run `python backtest.py`")
 else:
     st.dataframe(accuracy, use_container_width=True)
+
+st.divider()
+
+# Creator screening
+st.subheader("Creator Screening")
+st.caption("Candidates ranked by the Wilson lower-bound of their beat-SPY rate "
+           "(conservative — penalizes small samples; needs ≥30 calls to be eligible)")
+screening = get_screening_leaderboard()
+if screening.empty:
+    st.info("No screening data yet — run `python backtest.py`")
+else:
+    st.dataframe(screening, use_container_width=True)
 
 st.divider()
 

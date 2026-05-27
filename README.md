@@ -6,6 +6,10 @@ attribution using FinBERT, explains *why* each stock is bullish or bearish via
 LLM-extracted reasons, and **backtests each creator's track record** against real
 price movement.
 
+## Live demo
+- **API:** https://finsignal-api.onrender.com ([interactive docs](https://finsignal-api.onrender.com/docs)) — Render free tier, first request may cold-start (~30s)
+- **Dashboard:** _Streamlit Community Cloud (add link)_
+
 ---
 
 ## Architecture
@@ -30,6 +34,12 @@ ingestion/  →  nlp/  →  db/  →  dashboard/
   3 short phrases explaining the sentiment.
 - **Backtesting** — `yfinance` prices compared against each call over a 30-day
   horizon to compute per-creator hit rate.
+- **Ask (RAG)** — embeds stored sentences (`all-MiniLM-L6-v2`), retrieves those most
+  relevant to a plain-English question, and asks Groq for an answer grounded in them
+  with citations back to the source creator/ticker.
+- **Screening** — scores each call against SPY (beat/lag), then ranks creators by the
+  Wilson lower-bound of their beat-the-benchmark rate (conservative — penalizes small
+  samples), with a minimum-calls eligibility gate.
 - **Storage** — DuckDB (chosen over SQLite for analytical query performance).
 - **API** — FastAPI read layer exposing the stored analytics as JSON endpoints.
 - **Dashboard** — Streamlit leaderboards: consensus, bullish/bearish, reasons,
@@ -39,8 +49,9 @@ ingestion/  →  nlp/  →  db/  →  dashboard/
 
 ## Stack
 
-Python · FinBERT · HuggingFace Transformers · spaCy · DuckDB · FastAPI · Streamlit ·
-Groq (Llama 3.3 70B) · yfinance · youtube-transcript-api · YouTube Data API v3
+Python · FinBERT · HuggingFace Transformers · spaCy · sentence-transformers · DuckDB ·
+FastAPI · Streamlit · Groq (Llama 3.3 70B) · yfinance · youtube-transcript-api ·
+YouTube Data API v3
 
 ---
 
@@ -114,8 +125,14 @@ streamlit run dashboard/app.py
       ingestion, Streamlit dashboard
 - [x] **Phase 2** — intelligence layer: reason extraction, consensus scoring,
       creator accuracy backtesting
-- [ ] **Phase 3** — FastAPI backend, improved frontend, scheduled ingestion,
-      deployment (rotating proxies replace the manual VPN step)
+- [x] **Phase 3** — FastAPI backend, split architecture (local ingestion + cloud
+      serving), deployed dashboard (Streamlit Cloud) and API (Render)
+- [~] **Phase 4** — "Ask FinSignal" RAG: semantic retrieval over creator sentences +
+      grounded Groq answers with citations. Local MVP done; cloud serving (torch-free
+      query embedding) pending.
+- [~] **Phase 5** — Creator screening: benchmark-relative backtest + Wilson-bound
+      ranking with an eligibility gate. Scoring/surfacing done; promotion and a deeper
+      candidate pool (out-of-sample validation) pending.
 
 ---
 

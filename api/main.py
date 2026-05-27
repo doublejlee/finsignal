@@ -59,3 +59,17 @@ def reasons():
 @app.get("/creators/accuracy")
 def creator_accuracy(horizon_days: int = Query(30, ge=1)):
     return _records(storage.get_creator_accuracy(horizon_days=horizon_days))
+
+@app.get("/screen")
+def screen(min_calls: int = Query(30, ge=1)):
+    return _records(storage.get_screening_leaderboard(min_calls=min_calls))
+
+@app.get("/ask")
+def ask(q: str = Query(..., min_length=3)):
+    # Lazy import: rag pulls in sentence-transformers/torch, which the lightweight
+    # cloud deploy doesn't install. Keeps the rest of the API working there.
+    try:
+        from nlp.rag import answer
+    except ImportError:
+        return {"answer": "Ask is unavailable in this deployment (no embedding model installed).", "citations": []}
+    return answer(q)

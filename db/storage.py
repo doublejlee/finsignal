@@ -1,5 +1,9 @@
 from db.init import get_connection
 from datetime import datetime
+import math
+import pandas as pd
+
+MIN_ELIGIBLE_CALLS = 30
 
 def get_or_create_creator(channel_id: str, name: str, subscriber_count: int = None) -> int:
     """Get or create creator, returns creator_id."""
@@ -121,19 +125,23 @@ def get_consensus_scores(min_creators: int = 1):
         ORDER BY ABS(AVG(ts.directional_score)) DESC
     """, [min_creators]).fetchdf()
 
-def store_backtest_result(video_id: int, ticker: str, horizon_days: int, call: str, return_pct: float, correct: bool):
+def store_backtest_result(video_id: int, ticker: str, horizon_days: int, call: str, return_pct: float, correct: bool,
+                          benchmark_return_pct: float = None, beat_benchmark: bool = None):
     """Store one backtested call. Upserts on (video_id, ticker, horizon_days)."""
     conn = get_connection()
     conn.execute(
         """
-        INSERT INTO backtest_results (video_id, ticker, horizon_days, call, return_pct, correct)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO backtest_results
+            (video_id, ticker, horizon_days, call, return_pct, correct, benchmark_return_pct, beat_benchmark)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(video_id, ticker, horizon_days) DO UPDATE SET
             call = excluded.call,
             return_pct = excluded.return_pct,
-            correct = excluded.correct
+            correct = excluded.correct,
+            benchmark_return_pct = excluded.benchmark_return_pct,
+            beat_benchmark = excluded.beat_benchmark
         """,
-        [video_id, ticker, horizon_days, call, return_pct, correct]
+        [video_id, ticker, horizon_days, call, return_pct, correct, benchmark_return_pct, beat_benchmark]
     )
     conn.commit()
 
@@ -153,6 +161,51 @@ def get_creator_accuracy(horizon_days: int = 30):
         GROUP BY c.name
         ORDER BY hit_rate_pct DESC
     """, [horizon_days]).fetchdf()
+
+def _wilson_lower_bound(successes: int, n: int, z: float = 1.96) -> float:
+    """Lower bound of the Wilson score interval — a conservative estimate of the
+    true success rate that penalizes small samples (so 5/7 doesn't outrank 120/200)."""
+    if n == 0:
+        return 0.0
+    p = successes / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)
+    return max(0.0, (centre - margin) / (1 + z * z / n))
+
+def get_screening_leaderboard(min_calls: int = MIN_ELIGIBLE_CALLS):
+    """Rank creators by the Wilson lower-bound of their beat-the-benchmark rate.
+
+    Only calls scored against the benchmark (beat_benchmark NOT NULL) count. Creators
+    with fewer than min_calls eligible calls are shown but flagged not-eligible.
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT cr.name, cr.status,
+               COUNT(*) AS n,
+               SUM(CASE WHEN b.beat_benchmark THEN 1 ELSE 0 END) AS beats
+        FROM backtest_results b
+        JOIN videos v ON b.video_id = v.id
+        JOIN creators cr ON v.creator_id = cr.id
+        WHERE b.beat_benchmark IS NOT NULL
+        GROUP BY cr.name, cr.status
+    """).fetchall()
+
+    records = []
+    for name, status, n, beats in rows:
+        beats = int(beats or 0)
+        records.append({
+            "creator": name,
+            "status": status,
+            "calls": n,
+            "beat_spy_pct": round(100.0 * beats / n, 1) if n else 0.0,
+            "wilson_lower_pct": round(100.0 * _wilson_lower_bound(beats, n), 1),
+            "eligible": n >= min_calls,
+        })
+
+    df = pd.DataFrame(records, columns=["creator", "status", "calls", "beat_spy_pct", "wilson_lower_pct", "eligible"])
+    if not df.empty:
+        df = df.sort_values(["eligible", "wilson_lower_pct"], ascending=[False, False]).reset_index(drop=True)
+    return df
 
 def get_reasons_by_ticker():
     """Distinct reason phrases per ticker, aggregated across all videos."""

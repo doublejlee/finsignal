@@ -3,8 +3,9 @@
 For each non-neutral sentiment call, compare the stock's price at the video date
 against its price HORIZON_DAYS later (raw direction). A bullish call is correct if
 the price rose; a bearish call is correct if it fell. Calls whose horizon hasn't
-elapsed yet (not enough future price data) are skipped. Results land in
-backtest_results; rerun is idempotent (upsert per video/ticker/horizon).
+elapsed yet (not enough future price data) are skipped. Each call is also scored
+against SPY over the same window (benchmark_return_pct / beat_benchmark) for the
+screening metric. Results land in backtest_results; rerun is idempotent.
 """
 from collections import defaultdict
 from datetime import date, timedelta
@@ -47,6 +48,20 @@ def run():
     today = date.today()
     evaluated = skipped = 0
 
+    # Benchmark (SPY) prices over the full window, fetched once.
+    spy_closes = None
+    if by_ticker:
+        earliest_all = min(c[2] for calls in by_ticker.values() for c in calls)
+        try:
+            spy_data = yf.download("SPY", start=earliest_all - timedelta(days=5),
+                                   end=today + timedelta(days=1), progress=False, auto_adjust=True)
+            if not spy_data.empty:
+                spy_closes = spy_data["Close"]
+                if hasattr(spy_closes, "columns"):
+                    spy_closes = spy_closes["SPY"]
+        except Exception as e:
+            print(f"  SPY benchmark fetch failed ({e}); benchmark metrics will be null.")
+
     for ticker, ticker_calls in by_ticker.items():
         earliest = min(c[2] for c in ticker_calls)
         start = earliest - timedelta(days=5)
@@ -80,10 +95,23 @@ def run():
             return_pct = (exit_price - entry) / entry * 100
             correct = (call == "bullish" and return_pct > 0) or (call == "bearish" and return_pct < 0)
 
-            store_backtest_result(video_id, ticker, HORIZON_DAYS, call, return_pct, correct)
+            benchmark_return_pct = beat_benchmark = None
+            if spy_closes is not None:
+                spy_entry = price_on_or_after(spy_closes, pub_date)
+                spy_exit = price_on_or_after(spy_closes, pub_date + timedelta(days=HORIZON_DAYS))
+                if spy_entry is not None and spy_exit is not None:
+                    benchmark_return_pct = (spy_exit - spy_entry) / spy_entry * 100
+                    beat_benchmark = (
+                        (call == "bullish" and return_pct > benchmark_return_pct)
+                        or (call == "bearish" and return_pct < benchmark_return_pct)
+                    )
+
+            store_backtest_result(video_id, ticker, HORIZON_DAYS, call, return_pct, correct,
+                                  benchmark_return_pct, beat_benchmark)
             evaluated += 1
             mark = "OK " if correct else "MISS"
-            print(f"  [{mark}] {ticker:<6} {call:<8} {return_pct:+6.1f}% (video {video_id})")
+            bench = f" vs SPY {benchmark_return_pct:+.1f}% {'beat' if beat_benchmark else 'lag'}" if benchmark_return_pct is not None else ""
+            print(f"  [{mark}] {ticker:<6} {call:<8} {return_pct:+6.1f}%{bench} (video {video_id})")
 
     print(f"\nDone. {evaluated} calls evaluated, {skipped} skipped (horizon not elapsed or no data).")
 

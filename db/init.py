@@ -17,6 +17,7 @@ def init_schema():
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_segments START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_ticker_reasons START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_backtest_results START 1")
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_sentence_embeddings START 1")
     
 
     conn.execute("""
@@ -101,6 +102,32 @@ def init_schema():
         )
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sentence_embeddings (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_sentence_embeddings'),
+            segment_id INTEGER NOT NULL,
+            embedding FLOAT[384] NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (segment_id) REFERENCES transcript_segments(id),
+            UNIQUE(segment_id)
+        )
+    """)
+
+    # Migrations for columns added after initial release (idempotent)
+    def _columns(table):
+        return [r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
+        ).fetchall()]
+
+    if "status" not in _columns("creators"):
+        conn.execute("ALTER TABLE creators ADD COLUMN status VARCHAR DEFAULT 'candidate'")
+
+    backtest_cols = _columns("backtest_results")
+    if "benchmark_return_pct" not in backtest_cols:
+        conn.execute("ALTER TABLE backtest_results ADD COLUMN benchmark_return_pct FLOAT")
+    if "beat_benchmark" not in backtest_cols:
+        conn.execute("ALTER TABLE backtest_results ADD COLUMN beat_benchmark BOOLEAN")
+
     # Indexes for query performance
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_sentiments_ticker ON ticker_sentiments(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_sentiments_video_id ON ticker_sentiments(video_id)")
@@ -110,6 +137,7 @@ def init_schema():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_reasons_ticker ON ticker_reasons(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_reasons_video_id ON ticker_reasons(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_results_video_id ON backtest_results(video_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sentence_embeddings_segment_id ON sentence_embeddings(segment_id)")
 
     conn.commit()
     print("Database schema initialized")
