@@ -1,7 +1,5 @@
 """RAG over stored creator sentences: retrieve relevant sentences, answer with Groq.
 
-Local MVP — query embedding uses sentence-transformers (torch). Phase 4b will swap
-this for a hosted embedding API so the cloud serving layer can stay torch-free.
 Run with VPN OFF (Groq blocks VPN IPs).
 
     python -m nlp.rag "what is the bull case for NVDA?"
@@ -10,20 +8,31 @@ import os
 import re
 import numpy as np
 import requests
-from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 from db.init import get_connection
 
 load_dotenv()
 
-MODEL_NAME = "all-MiniLM-L6-v2"
-_model = None
+_HF_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
 
-def _get_model():
-    global _model
-    if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
-    return _model
+def _embed_query(query: str) -> np.ndarray:
+    """Embed a query string via HuggingFace Inference API (same model as backfill_embeddings)."""
+    headers = {"Content-Type": "application/json"}
+    token = os.getenv("HF_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    resp = requests.post(
+        _HF_URL,
+        headers=headers,
+        json={"inputs": query, "options": {"wait_for_model": True}},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    # HF returns [[float,...]] for a single string input
+    vec = np.array(data[0] if isinstance(data[0], list) else data, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
 
 def retrieve(query: str, top_k: int = 8) -> list:
     """Return the top_k stored sentences most similar to the query (cosine)."""
@@ -40,7 +49,7 @@ def retrieve(query: str, top_k: int = 8) -> list:
         return []
 
     vectors = np.array([r[0] for r in rows], dtype=np.float32)
-    q = _get_model().encode([query], normalize_embeddings=True)[0]
+    q = _embed_query(query)
     scores = vectors @ q  # both normalized -> dot product is cosine similarity
 
     # Walk best-first, keeping each distinct sentence once (the same sentence is

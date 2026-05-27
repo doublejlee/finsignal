@@ -57,7 +57,8 @@ it skips `(video_id, ticker)` pairs already in `ticker_reasons`.
 - `YOUTUBE_API_KEY` — used by `ingestion/channel_fetcher.py` to fetch channel video lists via YouTube Data API v3
 - `GROQ_API_KEY` — used by `nlp/topic_model.py` for Llama 3.3 reason extraction via Groq's OpenAI-compatible endpoint (raw HTTP, not SDK)
 
-Optional (for transcript fetching without a VPN):
+Optional:
+- `HF_TOKEN` — HuggingFace API token. Used by `nlp/rag.py` to embed queries via the HuggingFace Inference API (`sentence-transformers/all-MiniLM-L6-v2`). Works without a token (anonymous) but authenticated requests get higher rate limits. Set this on Render for the `/ask` endpoint.
 - `WEBSHARE_PROXY_USERNAME` / `WEBSHARE_PROXY_PASSWORD` — Webshare proxy credentials. When both are set, `youtube_fetcher.py` routes transcript requests through Webshare's rotating gateway (`p.webshare.io:80`) via `WebshareProxyConfig`, bypassing YouTube IP blocks. Note: the free Webshare tier is datacenter proxies, which YouTube may still block; residential proxies are more reliable.
 
 `ingestion/youtube_fetcher.py` resolves network access in this order: Webshare proxy (if `WEBSHARE_PROXY_*` set) → `cookies.txt` (Netscape format at repo root) → Firefox/Chrome browser cookies → unauthenticated. `cookies.txt` is gitignored (contains session tokens).
