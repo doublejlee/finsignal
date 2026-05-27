@@ -14,25 +14,41 @@ from db.init import get_connection
 load_dotenv()
 
 _HF_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
+_local_model = None
 
 def _embed_query(query: str) -> np.ndarray:
-    """Embed a query string via HuggingFace Inference API (same model as backfill_embeddings)."""
-    headers = {"Content-Type": "application/json"}
-    token = os.getenv("HF_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    resp = requests.post(
-        _HF_URL,
-        headers=headers,
-        json={"inputs": query, "options": {"wait_for_model": True}},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    # HF returns [[float,...]] for a single string input
-    vec = np.array(data[0] if isinstance(data[0], list) else data, dtype=np.float32)
-    norm = np.linalg.norm(vec)
-    return vec / norm if norm > 0 else vec
+    """Embed query via HF Inference API; falls back to local sentence-transformers if unreachable."""
+    # Cloud path: torch-free, required on Render
+    try:
+        headers = {"Content-Type": "application/json"}
+        token = os.getenv("HF_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        resp = requests.post(
+            _HF_URL,
+            headers=headers,
+            json={"inputs": query, "options": {"wait_for_model": True}},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        vec = np.array(data[0] if isinstance(data[0], list) else data, dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else vec
+    except Exception:
+        pass
+
+    # Local fallback: sentence-transformers (pipeline env only, requires torch)
+    global _local_model
+    try:
+        from sentence_transformers import SentenceTransformer
+        if _local_model is None:
+            _local_model = SentenceTransformer("all-MiniLM-L6-v2")
+        return _local_model.encode([query], normalize_embeddings=True)[0]
+    except ImportError:
+        raise RuntimeError(
+            "Query embedding failed: HF Inference API unreachable and sentence-transformers not installed."
+        )
 
 def retrieve(query: str, top_k: int = 8) -> list:
     """Return the top_k stored sentences most similar to the query (cosine)."""
