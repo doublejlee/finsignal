@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the project
 
 ```bash
-# Setup (first time)
-pip install -r requirements.txt
+# Setup (first time) — full local pipeline
+pip install -r requirements-pipeline.txt
 python -m spacy download en_core_web_sm   # spaCy model is not on PyPI
+# (root requirements.txt is the minimal serving set used by Streamlit Cloud)
 
 # Stage 1 — ingestion + sentiment (run with VPN ON; YouTube blocks bare IPs)
 python main.py
@@ -17,6 +18,9 @@ python -m nlp.backfill_reasons
 
 # Stage 3 — creator accuracy backtest (yfinance prices vs each call, 30-day horizon)
 python backtest.py
+
+# Or run all three stages in order with VPN-toggle prompts:
+python refresh.py
 
 # API — serve stored analytics as JSON (run from repo root; interactive docs at /docs)
 uvicorn api.main:app --reload
@@ -49,7 +53,10 @@ it skips `(video_id, ticker)` pairs already in `ticker_reasons`.
 - `YOUTUBE_API_KEY` — used by `ingestion/channel_fetcher.py` to fetch channel video lists via YouTube Data API v3
 - `GROQ_API_KEY` — used by `nlp/topic_model.py` for Llama 3.3 reason extraction via Groq's OpenAI-compatible endpoint (raw HTTP, not SDK)
 
-`ingestion/youtube_fetcher.py` authenticates to YouTube via cookies: it prefers a `cookies.txt` (Netscape format) at repo root, then falls back to Firefox/Chrome browser cookies, then unauthenticated. `cookies.txt` is gitignored (contains session tokens).
+Optional (for transcript fetching without a VPN):
+- `WEBSHARE_PROXY_USERNAME` / `WEBSHARE_PROXY_PASSWORD` — Webshare proxy credentials. When both are set, `youtube_fetcher.py` routes transcript requests through Webshare's rotating gateway (`p.webshare.io:80`) via `WebshareProxyConfig`, bypassing YouTube IP blocks. Note: the free Webshare tier is datacenter proxies, which YouTube may still block; residential proxies are more reliable.
+
+`ingestion/youtube_fetcher.py` resolves network access in this order: Webshare proxy (if `WEBSHARE_PROXY_*` set) → `cookies.txt` (Netscape format at repo root) → Firefox/Chrome browser cookies → unauthenticated. `cookies.txt` is gitignored (contains session tokens).
 
 ## Architecture
 

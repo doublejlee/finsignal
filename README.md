@@ -46,12 +46,19 @@ Groq (Llama 3.3 70B) · yfinance · youtube-transcript-api · YouTube Data API v
 
 ## Setup
 
+Full local pipeline (ingestion, NLP, backtest, API, dashboard):
+
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-pipeline.txt
 python -m spacy download en_core_web_sm   # spaCy model isn't on PyPI
 ```
 
-`.env` at the repo root needs `YOUTUBE_API_KEY` and `GROQ_API_KEY`.
+`.env` at the repo root needs `YOUTUBE_API_KEY` and `GROQ_API_KEY` (and optionally
+`WEBSHARE_PROXY_USERNAME` / `WEBSHARE_PROXY_PASSWORD`).
+
+The root `requirements.txt` is intentionally minimal (`streamlit`, `duckdb`,
+`pandas`) — it's what Streamlit Community Cloud installs to serve the read-only
+dashboard, which needs none of the ML/ingestion stack.
 
 ## Running the pipeline
 

@@ -1,8 +1,13 @@
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import browser_cookie3
 import http.cookiejar
 import requests
+import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 COOKIES_FILE = Path(__file__).parent.parent / "cookies.txt"
 
@@ -12,7 +17,15 @@ def _session_from_jar(jar):
     return session
 
 def get_transcript(video_id):
-    if COOKIES_FILE.exists():
+    proxy_user = os.getenv("WEBSHARE_PROXY_USERNAME")
+    proxy_pass = os.getenv("WEBSHARE_PROXY_PASSWORD")
+
+    if proxy_user and proxy_pass:
+        print("  [net] using Webshare proxy")
+        ytt = YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(proxy_username=proxy_user, proxy_password=proxy_pass)
+        )
+    elif COOKIES_FILE.exists():
         print("  [auth] using cookies.txt")
         jar = http.cookiejar.MozillaCookieJar()
         jar.load(str(COOKIES_FILE), ignore_discard=True, ignore_expires=True)

@@ -1,31 +1,9 @@
-# FinSignal dependencies (pinned to the versions developed against).
-# Install:  pip install -r requirements.txt
-# Then the spaCy model (not on PyPI):  python -m spacy download en_core_web_sm
-
-# API
-fastapi==0.136.3
-uvicorn==0.48.0
-
-# Storage / data
+# Minimal dependencies for the DEPLOYED serving layer (Streamlit dashboard).
+# Streamlit Community Cloud installs from this root file. The dashboard only reads
+# the committed DuckDB file, so it needs none of the ML/ingestion stack.
+#
+# For the full local pipeline (ingestion, NLP, backtest, API), use:
+#   pip install -r requirements-pipeline.txt
+streamlit==1.57.0
 duckdb==1.5.3
 pandas==3.0.3
-
-# NLP / ML
-transformers==5.9.0
-torch==2.12.0          # FinBERT inference backend
-spacy==3.8.14          # sentence splitting; also needs: python -m spacy download en_core_web_sm
-
-# Dashboard
-streamlit==1.57.0
-
-# Ingestion
-youtube-transcript-api==1.2.4
-browser-cookie3==0.20.1
-google-api-python-client==2.196.0
-requests==2.34.2
-
-# Backtesting
-yfinance==1.4.0
-
-# Config
-python-dotenv==1.2.2
