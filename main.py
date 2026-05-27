@@ -3,6 +3,7 @@ from nlp.ticker_extractor import extract_tickers
 from nlp.sentiment import analyse_sentiment_for_ticker
 from db.storage import get_or_create_creator, get_or_create_video, store_ticker_sentiment, store_transcript_segments
 from db.init import init_schema
+from datetime import datetime
 import time
 
 def directional_score(label, score):
@@ -14,14 +15,18 @@ def directional_score(label, score):
         return 0
 
 def analyse_video(video_id, channel_id="unknown", creator_name="unknown", title="unknown", published_at=None):
-    print(f"\nFetching transcript for video: {video_id}")
+    if isinstance(published_at, str):
+        published_at = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+    date_str = published_at.strftime("%Y-%m-%d") if published_at else "unknown date"
+    print(f"\n{title}")
+    print(f"{date_str} | {video_id}")
+    print("Fetching transcript...")
     text = get_transcript(video_id)
 
     print("Extracting tickers...")
     tickers = extract_tickers(text)
     print(f"Found {len(tickers)} tickers: {tickers}\n")
 
-    # Store creator and video in database
     creator_id = get_or_create_creator(channel_id, creator_name)
     db_video_id = get_or_create_video(creator_id, video_id, title=title, published_at=published_at)
 
@@ -30,7 +35,6 @@ def analyse_video(video_id, channel_id="unknown", creator_name="unknown", title=
         label, score, sentences = analyse_sentiment_for_ticker(text, ticker)
         d_score = directional_score(label, score)
 
-        # Store in database
         store_ticker_sentiment(db_video_id, ticker, label, d_score, len(sentences))
         store_transcript_segments(db_video_id, ticker, sentences, label, score)
 
@@ -44,10 +48,10 @@ def analyse_video(video_id, channel_id="unknown", creator_name="unknown", title=
 
     results.sort(key=lambda x: x["directional_score"], reverse=True)
 
-    print(f"{'TICKER':<8} {'SENTIMENT':<12} {'DIRECTIONAL SCORE':<20} {'SENTENCES'}")
+    print(f"{'TICKER':<8} {'SENTIMENT':<12} {'SCORE':<10} {'SENTENCES'}")
     print("-" * 50)
     for r in results:
-        print(f"{r['ticker']:<8} {r['sentiment']:<12} {r['directional_score']:<20} {r['sentences_analysed']}")
+        print(f"{r['ticker']:<8} {r['sentiment']:<12} {r['directional_score']:<10.3f} {r['sentences_analysed']}")
 
     return results
 
@@ -69,7 +73,7 @@ if __name__ == "__main__":
         print(f"Processing channel: {channel['name']}")
         print(f"{'='*50}")
         
-        videos = get_recent_videos(channel["channel_id"], max_results=5)
+        videos = get_recent_videos(channel["channel_id"], max_results=2)
         
         
         for video in videos:
@@ -80,7 +84,7 @@ if __name__ == "__main__":
                            title=video["title"],
                            published_at=video["published_at"]
                            )
-             time.sleep(5)  # wait 2 seconds between videos
+             time.sleep(5)  # wait 5 seconds between videos
             except Exception as e:
              print(f"Skipping {video['video_id']}: {e}")
              continue

@@ -4,11 +4,47 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.init import get_connection
+from db.storage import get_consensus_scores, get_reasons_by_ticker, get_creator_accuracy
 
 st.set_page_config(page_title="FinSignal", layout="wide")
 st.title("FinSignal — Financial Sentiment Dashboard")
 
 conn = get_connection()
+
+# Creator accuracy
+st.subheader("Creator Accuracy (30-day horizon)")
+st.caption("Hit rate of each creator's directional calls vs actual price movement 30 days later")
+accuracy = get_creator_accuracy(horizon_days=30)
+if accuracy.empty:
+    st.info("No backtest data yet — run `python backtest.py`")
+else:
+    st.dataframe(accuracy, use_container_width=True)
+
+st.divider()
+
+# Consensus scores
+st.subheader("Consensus Scores")
+st.caption("Aggregated across all creators — ordered by signal strength")
+consensus = get_consensus_scores(min_creators=1)
+if consensus.empty:
+    st.info("No consensus data yet — run the pipeline on more videos")
+else:
+    st.dataframe(consensus, use_container_width=True)
+
+st.divider()
+
+# Reasons behind sentiment
+st.subheader("Why? — Reasons Behind Sentiment")
+reasons_df = get_reasons_by_ticker()
+if reasons_df.empty:
+    st.info("No reasons yet — run `python -m nlp.backfill_reasons` (VPN off)")
+else:
+    ticker = st.selectbox("Select a ticker", reasons_df["ticker"].tolist())
+    row = reasons_df[reasons_df["ticker"] == ticker].iloc[0]
+    for reason in row["reasons"].split(", "):
+        st.markdown(f"- {reason}")
+
+st.divider()
 
 # Top bullish tickers
 st.subheader("Top Bullish Tickers")

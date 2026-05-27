@@ -25,7 +25,7 @@ TICKER_DICT = {
 
     # Energy
     "exxon": "XOM", "chevron": "CVX", "conocophillips": "COP",
-    "enphase": "ENPH", "nphase": "NPHS", "first solar": "FSLR",
+    "enphase": "ENPH", "first solar": "FSLR",
     "nextera": "NEE", "plug power": "PLUG",
 
     # Healthcare
@@ -55,7 +55,7 @@ def extract_tickers(text):
     for name, ticker in TICKER_DICT.items():
         if ticker in AMBIGUOUS_TICKERS:
             continue
-        if name in text_lower:
+        if re.search(r'\b' + re.escape(name) + r'\b', text_lower):
             found.add(ticker)
 
     return list(found)

@@ -9,6 +9,9 @@ __pycache__/
 # Environment variables (API keys later)
 .env
 
+# YouTube auth cookies — contains session tokens, never commit
+cookies.txt
+
 # Data files
 data/
 

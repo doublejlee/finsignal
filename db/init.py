@@ -15,6 +15,8 @@ def init_schema():
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_videos START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_ticker_sentiments START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_segments START 1")
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_ticker_reasons START 1")
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_backtest_results START 1")
     
 
     conn.execute("""
@@ -73,15 +75,44 @@ def init_schema():
 
 
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_reasons (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_ticker_reasons'),
+            video_id INTEGER NOT NULL,
+            ticker VARCHAR NOT NULL,
+            reason VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (video_id) REFERENCES videos(id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_results (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_backtest_results'),
+            video_id INTEGER NOT NULL,
+            ticker VARCHAR NOT NULL,
+            horizon_days INTEGER NOT NULL,
+            call VARCHAR NOT NULL,
+            return_pct FLOAT NOT NULL,
+            correct BOOLEAN NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (video_id) REFERENCES videos(id),
+            UNIQUE(video_id, ticker, horizon_days)
+        )
+    """)
+
     # Indexes for query performance
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_sentiments_ticker ON ticker_sentiments(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_sentiments_video_id ON ticker_sentiments(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_transcript_ticker ON transcript_segments(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_transcript_video_id ON transcript_segments(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_creator_id ON videos(creator_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_reasons_ticker ON ticker_reasons(ticker)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_reasons_video_id ON ticker_reasons(video_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_results_video_id ON backtest_results(video_id)")
 
     conn.commit()
-    print("✓ Database schema initialized")
+    print("Database schema initialized")
     
 def check_data():
     conn = get_connection()

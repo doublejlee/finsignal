@@ -1,60 +1,214 @@
 # FinSignal
-AI-powered financial sentiment intelligence platform that aggregates creator 
-opinions from YouTube, performs sentence-level sentiment attribution using 
-FinBERT, and ranks stocks by weighted bullish/bearish consensus.
+
+AI-powered financial sentiment intelligence platform. FinSignal aggregates
+finance-YouTube creator opinions, performs **sentence-level** sentiment
+attribution using FinBERT, explains *why* each stock is bullish or bearish via
+LLM-extracted reasons, and **backtests each creator's track record** against real
+price movement.
+
+---
 
 ## Architecture
-- **Ingestion**: youtube-transcript-api pulls transcripts from finance channels
-- **Ticker extraction**: regex + company name dictionary with ambiguity filtering
-- **Sentiment**: FinBERT (ProsusAI) run at sentence level with recency weighting
-- **Chunking**: spaCy sentence splitting with ±2 sentence context window per ticker
 
-## Key design decisions
-- Sentence-level attribution chosen over full-transcript scoring to avoid 
-  sentiment bleed between tickers
-- Recency-weighted scoring to capture a creator's current position rather than 
-  historical views expressed earlier in the video
-- Ambiguous company names (e.g "uber", "intel") require explicit $TICKER format 
-  to avoid false positives
+A four-layer pipeline:
+
+```
+ingestion/  →  nlp/  →  db/  →  dashboard/
+ (YouTube)    (FinBERT,   (DuckDB)   (Streamlit)
+              Groq)
+```
+
+- **Ingestion** — `youtube-transcript-api` pulls transcripts; YouTube Data API v3
+  lists recent videos per channel.
+- **Ticker extraction** — regex `$TICKER` + company-name dictionary with
+  word-boundary matching and an ambiguity filter.
+- **Sentiment** — FinBERT (`ProsusAI/finbert`) run at sentence level with recency
+  weighting.
+- **Chunking** — spaCy sentence splitting with a ±1 sentence context window per
+  ticker mention.
+- **Reasons** — ticker-relevant sentences sent to Groq (Llama 3.3 70B) to extract
+  3 short phrases explaining the sentiment.
+- **Backtesting** — `yfinance` prices compared against each call over a 30-day
+  horizon to compute per-creator hit rate.
+- **Storage** — DuckDB (chosen over SQLite for analytical query performance).
+- **Dashboard** — Streamlit leaderboards: consensus, bullish/bearish, reasons,
+  creator accuracy.
+
+---
 
 ## Stack
-Python, FinBERT, HuggingFace Transformers, spaCy, pandas, youtube-transcript-api
 
+Python · FinBERT · HuggingFace Transformers · spaCy · DuckDB · Streamlit ·
+Groq (Llama 3.3 70B) · yfinance · youtube-transcript-api · YouTube Data API v3
 
+---
+
+## Running the pipeline
+
+The pipeline runs in **three network-isolated stages** (see
+[VPN vs Groq conflict](#problem-the-vpn-that-fixes-youtube-breaks-groq) for why):
+
+```bash
+# Stage 1 — ingestion + sentiment        (run with VPN ON; YouTube blocks bare IPs)
+python main.py
+
+# Stage 2 — reason extraction            (run with VPN OFF; Groq blocks VPN IPs)
+python -m nlp.backfill_reasons
+
+# Stage 3 — creator accuracy backtest     (yfinance prices vs each call)
+python backtest.py
+
+# Dashboard
+streamlit run dashboard/app.py
+```
+
+`.env` requires `YOUTUBE_API_KEY` and `GROQ_API_KEY`. A `cookies.txt`
+(Netscape format, gitignored) at the repo root authenticates YouTube requests.
+
+---
+
+## Key design decisions
+
+- **Sentence-level attribution** over full-transcript scoring, to avoid sentiment
+  bleed between tickers — each ticker only scores sentences that mention it (plus a
+  ±1 context window).
+- **Recency-weighted scoring** (`weight = 1 + 2·i/n`) so later sentences carry more
+  influence, capturing the creator's *current* position rather than views expressed
+  earlier in the video.
+- **Ambiguous company names** (e.g. "uber", "intel") require explicit `$TICKER`
+  format to avoid false positives.
+- **Word-boundary ticker matching** instead of substring matching (see the NPHS bug
+  below).
+- **Decoupled pipeline stages** because ingestion and reason extraction have
+  opposite network requirements.
+- **DuckDB** for fast analytical aggregation queries.
+
+---
 
 ## Progress
-- [x] Phase 0 — working CLI pipeline for single video
-- [ ] Phase 1 — full NLP pipeline with database
-- [ ] Phase 2 — intelligence layer
-- [ ] Phase 3 — API and dashboard
+
+- [x] **Phase 0** — working CLI pipeline for a single video
+- [x] **Phase 1** — full NLP pipeline, spaCy chunking, DuckDB storage, multi-creator
+      ingestion, Streamlit dashboard
+- [x] **Phase 2** — intelligence layer: reason extraction, consensus scoring,
+      creator accuracy backtesting
+- [ ] **Phase 3** — FastAPI backend, improved frontend, scheduled ingestion,
+      deployment (rotating proxies replace the manual VPN step)
+
+---
+
+## What Phase 2 delivered
+
+**1. Reason extraction** — for each ticker, 3 short phrases explaining the
+sentiment (e.g. NVDA → "AI datacenter demand", "Blackwell chip cycle"). Stored in a
+new `ticker_reasons` table; surfaced in the dashboard via a ticker dropdown.
+
+**2. Consensus scoring** — aggregates sentiment across all creators per ticker
+(average score, creator count, bullish/bearish/neutral split) so multi-creator
+agreement is visible at a glance.
+
+**3. Creator accuracy backtesting** — the headline feature. For every non-neutral
+call, FinSignal compares the stock's price on the video date against its price 30
+days later and scores whether the creator was directionally right. Aggregated into
+a per-creator hit rate.
+*First result: Joseph Carlson — **62.9%** over 35 evaluated calls.* (Other creators'
+videos are still younger than 30 days, so they populate as the data ages.)
+
+New `backtest_results` table; results shown in a "Creator Accuracy" dashboard
+section.
+
+---
 
 ## Challenges & solutions
 
-**Problem: Full-transcript sentiment gave every ticker the same score**  
-Cause: Running FinBERT on the entire transcript ignored which sentences 
-were about which ticker.  
-Solution: Sentence-level attribution with a ±2 sentence context window 
-per ticker mention.
+### Phase 0–1
 
-**Problem: Common words causing false positive ticker matches**  
-Cause: Words like "uber" and "intel" appear in everyday English, not just 
-as company references.  
-Solution: Ambiguous tickers moved to a separate list requiring explicit 
-$TICKER format to match.
+**Problem: Full-transcript sentiment gave every ticker the same score.**
+Running FinBERT on the whole transcript ignored which sentences were about which
+ticker.
+*Solution:* sentence-level attribution with a ±1 sentence context window per ticker
+mention.
 
-**Problem: Mixed-sentiment videos scoring incorrectly**  
-Cause: Creators often reference past bearish views before explaining a 
-current bullish position. Simple label counting treated historical 
-negativity equally to current sentiment.  
-Solution: Recency-weighted scoring where later sentences carry more weight, 
-capturing the creator's current position rather than their historical view.
+**Problem: Common words caused false-positive ticker matches.**
+Words like "uber" and "intel" appear in everyday English, not just as company
+references.
+*Solution:* ambiguous tickers moved to a separate list requiring explicit `$TICKER`
+format.
 
-**Known limitation: Temporal sentiment conflation**  
-Cause: FinBERT has no understanding of tense or time. A creator saying 
-"I was bearish 2 years ago but now I'm bullish" scores the historical 
-bearish statements equally to current ones, dragging down the final score.  
-Impact: Mixed-history videos like opinion reversals score closer to neutral 
-than their current stance warrants.  
-Planned fix: Phase 2 topic clustering will detect temporal markers 
-("I used to", "previously", "back then") to separate historical sentiment 
-from current position.
+**Problem: Mixed-sentiment videos scored incorrectly.**
+Creators reference past bearish views before explaining a current bullish position;
+simple label counting weighted historical negativity equally.
+*Solution:* recency-weighted scoring — later sentences carry more weight.
+
+### Phase 2
+
+**Problem: Reason extraction quality.**
+- *Tried — BERTopic keyword extraction:* topic labels were low-quality on small data
+  (few videos per ticker), producing noisy, hard-to-read keyword clusters.
+- *Tried — Claude Haiku via raw HTTP:* the request was missing its auth headers
+  (`x-api-key`, `anthropic-version`), so every call returned 401.
+- *Solution — Groq (Llama 3.3 70B):* free tier, OpenAI-compatible endpoint, returns
+  clean structured JSON. Produces concise, readable reasons. Works well.
+
+<a name="problem-the-vpn-that-fixes-youtube-breaks-groq"></a>
+**Problem: YouTube IP blocking.**
+`youtube-transcript-api` started failing with `IpBlocked` — YouTube rate-limits
+repeated requests from a single IP.
+- *Tried — Chrome cookies via `browser_cookie3`:* failed on Windows with
+  "Unable to get key for cookie decryption" — Chrome 127+ uses App-Bound Encryption
+  that the library can't decrypt.
+- *Tried — `cookies.txt` export (browser extension):* cookies loaded correctly, but
+  requests still hit `IpBlocked`. This proved the block was **IP-level, not
+  auth-level** — cookies alone could not fix it.
+- *Solution — ProtonVPN:* switching exit IP cleared the block immediately.
+  (Phase 3 will replace this manual step with rotating Webshare proxies.)
+
+**Problem: The VPN that fixes YouTube breaks Groq.**
+With the VPN on, Groq returned `403 Access denied` — it blocks VPN/datacenter exit
+IPs. So YouTube *needs* a VPN and Groq *forbids* one: they can't run in the same
+pass.
+*Solution:* decoupled the pipeline into separate stages. `main.py` stores raw
+sentences (VPN on); `nlp/backfill_reasons.py` reads them later and calls Groq (VPN
+off). The backfill is resumable — it skips `(video, ticker)` pairs that already have
+reasons, so a rate-limit or crash just means rerunning it.
+
+**Problem: `youtube-transcript-api` changed its constructor across versions.**
+The `cookies=` argument was removed; passing it raised `TypeError`.
+*Solution:* the installed version takes an `http_client` (a `requests.Session`), so
+cookies are loaded into a session that's passed in instead.
+
+**Problem: Phantom ticker "NPHS" sent to the backtest.**
+- *Detection:* `yfinance` returned `404 — Quote not found for symbol: NPHS`.
+- *Root cause:* the ticker dictionary had a typo'd entry `"nphase": "NPHS"` (the real
+  ticker is `ENPH`), and ticker matching used **substring** matching — so `"nphase"`
+  matched *inside* the word "e‑nphase", emitting the phantom every time Enphase was
+  discussed.
+- *Solution:* removed the bogus entry and switched to **word-boundary matching**
+  (`\b…\b`). This also eliminated a class of silent false positives (e.g.
+  "metaverse" → META). Stale NPHS rows were purged from the database.
+
+**Problem: `python -m db.init` crashed on Windows.**
+The success message used a Unicode `✓` that the cp1252 console couldn't encode,
+raising `UnicodeEncodeError` *after* the schema had already been created.
+*Solution:* replaced it with plain ASCII text.
+
+**Note — sparse backtest data (not a bug):** with a 30-day horizon, only videos
+older than ~30 days can be evaluated. Most current data is recent, so early backtest
+results are concentrated on the creator with the oldest videos. Coverage grows
+naturally as videos age.
+
+---
+
+## Known limitations
+
+- **Temporal sentiment conflation.** FinBERT has no sense of tense. "I *was* bearish
+  but now I'm bullish" scores both clauses equally, pulling the result toward
+  neutral. *Planned fix:* temporal-marker detection ("I used to", "previously") to
+  separate historical sentiment from current stance.
+- **Competitor mention false positives.** "Walmart competing with Amazon" can
+  attribute sentiment to AMZN incorrectly.
+- **YouTube IP blocking** is currently mitigated manually with a VPN +
+  `time.sleep(5)` between videos. *Planned fix:* rotating Webshare proxies in
+  Phase 3.
+- **Small sample sizes** make per-ticker and per-creator metrics noisy until more
+  videos are ingested.

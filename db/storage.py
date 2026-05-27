@@ -88,6 +88,86 @@ def store_transcript_segments(video_id: int, ticker: str, sentences: list, label
 
     conn.commit()
 
+def store_ticker_reasons(video_id: int, ticker: str, reasons: list):
+    """Store reason phrases for a ticker in a video. Replaces any existing reasons."""
+    conn = get_connection()
+    conn.execute(
+        "DELETE FROM ticker_reasons WHERE video_id = ? AND ticker = ?",
+        [video_id, ticker]
+    )
+    for reason in reasons:
+        conn.execute(
+            "INSERT INTO ticker_reasons (video_id, ticker, reason) VALUES (?, ?, ?)",
+            [video_id, ticker, reason]
+        )
+    conn.commit()
+
+def get_consensus_scores(min_creators: int = 1):
+    """Aggregate sentiment across all creators per ticker."""
+    conn = get_connection()
+    return conn.execute("""
+        SELECT
+            ts.ticker,
+            ROUND(AVG(ts.directional_score), 3)          AS avg_score,
+            COUNT(DISTINCT c.id)                          AS creator_count,
+            SUM(CASE WHEN ts.directional_score >  0.05 THEN 1 ELSE 0 END) AS bullish,
+            SUM(CASE WHEN ts.directional_score < -0.05 THEN 1 ELSE 0 END) AS bearish,
+            SUM(CASE WHEN ts.directional_score BETWEEN -0.05 AND 0.05 THEN 1 ELSE 0 END) AS neutral
+        FROM ticker_sentiments ts
+        JOIN videos v ON ts.video_id = v.id
+        JOIN creators c ON v.creator_id = c.id
+        GROUP BY ts.ticker
+        HAVING COUNT(DISTINCT c.id) >= ?
+        ORDER BY ABS(AVG(ts.directional_score)) DESC
+    """, [min_creators]).fetchdf()
+
+def store_backtest_result(video_id: int, ticker: str, horizon_days: int, call: str, return_pct: float, correct: bool):
+    """Store one backtested call. Upserts on (video_id, ticker, horizon_days)."""
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO backtest_results (video_id, ticker, horizon_days, call, return_pct, correct)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(video_id, ticker, horizon_days) DO UPDATE SET
+            call = excluded.call,
+            return_pct = excluded.return_pct,
+            correct = excluded.correct
+        """,
+        [video_id, ticker, horizon_days, call, return_pct, correct]
+    )
+    conn.commit()
+
+def get_creator_accuracy(horizon_days: int = 30):
+    """Per-creator hit rate across all backtested calls."""
+    conn = get_connection()
+    return conn.execute("""
+        SELECT
+            c.name AS creator,
+            COUNT(*) AS calls_evaluated,
+            SUM(CASE WHEN b.correct THEN 1 ELSE 0 END) AS correct,
+            ROUND(100.0 * SUM(CASE WHEN b.correct THEN 1 ELSE 0 END) / COUNT(*), 1) AS hit_rate_pct
+        FROM backtest_results b
+        JOIN videos v ON b.video_id = v.id
+        JOIN creators c ON v.creator_id = c.id
+        WHERE b.horizon_days = ?
+        GROUP BY c.name
+        ORDER BY hit_rate_pct DESC
+    """, [horizon_days]).fetchdf()
+
+def get_reasons_by_ticker():
+    """Distinct reason phrases per ticker, aggregated across all videos."""
+    conn = get_connection()
+    return conn.execute("""
+        SELECT ticker, string_agg(reason, ', ') AS reasons
+        FROM (
+            SELECT DISTINCT ticker, reason
+            FROM ticker_reasons
+            WHERE reason <> 'insufficient data'
+        )
+        GROUP BY ticker
+        ORDER BY ticker
+    """).fetchdf()
+
 def get_top_tickers(limit: int = 10, direction: str = "bullish") -> list:
     """Get top bullish or bearish tickers across all videos."""
     conn = get_connection()

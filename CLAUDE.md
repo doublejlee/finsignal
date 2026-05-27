@@ -1,0 +1,93 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Running the project
+
+```bash
+# Stage 1 — ingestion + sentiment (run with VPN ON; YouTube blocks bare IPs)
+python main.py
+
+# Stage 2 — reason extraction (run with VPN OFF; Groq blocks VPN IPs)
+python -m nlp.backfill_reasons
+
+# Stage 3 — creator accuracy backtest (yfinance prices vs each call, 30-day horizon)
+python backtest.py
+
+# Initialize or verify DB schema
+python -m db.init
+
+# Test individual modules (each has a __main__ block)
+python -m ingestion.youtube_fetcher      # fetches one hardcoded video transcript
+python -m ingestion.channel_fetcher      # lists recent videos from a channel
+python -m nlp.ticker_extractor           # extracts tickers from a transcript
+python -m nlp.chunker                    # shows per-ticker sentence context windows
+python -m nlp.sentiment                  # scores ticker sentiment for a transcript
+python -m nlp.topic_model                # extracts reasons for GOOGL sentiment from DB
+```
+
+**Why two stages:** YouTube transcript fetching needs a VPN (bare residential/cloud
+IPs get `IpBlocked`), but Groq returns `403 Access denied` from VPN exit IPs. The two
+have opposite network requirements, so reason extraction is decoupled from ingestion:
+`main.py` stores raw sentences in `transcript_segments`, and `backfill_reasons.py`
+reads those later (VPN off) to populate `ticker_reasons`. The backfill is resumable —
+it skips `(video_id, ticker)` pairs already in `ticker_reasons`.
+
+## Environment
+
+`.env` at root requires:
+- `YOUTUBE_API_KEY` — used by `ingestion/channel_fetcher.py` to fetch channel video lists via YouTube Data API v3
+- `GROQ_API_KEY` — used by `nlp/topic_model.py` for Llama 3.3 reason extraction via Groq's OpenAI-compatible endpoint (raw HTTP, not SDK)
+
+`ingestion/youtube_fetcher.py` authenticates to YouTube via cookies: it prefers a `cookies.txt` (Netscape format) at repo root, then falls back to Firefox/Chrome browser cookies, then unauthenticated. `cookies.txt` is gitignored (contains session tokens).
+
+## Architecture
+
+Four-layer pipeline:
+
+```
+ingestion/ → nlp/ → db/ → (future) api/dashboard
+```
+
+**ingestion/**
+- `channel_fetcher.py` — YouTube Data API v3 to list recent videos from a channel
+- `youtube_fetcher.py` — `youtube_transcript_api` to pull full transcript text for a video ID
+
+**nlp/**
+- `ticker_extractor.py` — two-pass extraction: regex `$TICKER` format, then company name dictionary lookup. Ambiguous names (e.g. "uber", "intel") are in `AMBIGUOUS_TICKERS` and require explicit `$TICKER` to match.
+- `chunker.py` — spaCy `en_core_web_sm` splits transcript into sentences; `get_sentences_for_ticker()` returns sentences mentioning the ticker plus a ±1 context window.
+- `sentiment.py` — FinBERT (`ProsusAI/finbert`) scores each sentence; filters out sentences <8 words or confidence <0.6; applies recency weighting (`weight = 1 + 2*(i/n)`) so later sentences carry more influence.
+- `topic_model.py` — sends ticker-relevant sentences to Groq (Llama 3.3 70B) to extract 3 short reason phrases explaining the sentiment. Sentences with <8 words are filtered; fewer than 3 remaining returns `["insufficient data"]` without calling the API.
+- `backfill_reasons.py` — offline batch runner for `topic_model`. Reads sentences from `transcript_segments`, populates `ticker_reasons`, skips already-done pairs, sleeps 2s between calls for rate limits.
+
+**db/**
+- `init.py` — DuckDB schema (6 tables + indexes). DB file lives at `db/finsignal.duckdb`. Each function opens a new connection via `get_connection()`.
+- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, and per-creator backtest accuracy.
+
+**main.py** — orchestrates the pipeline: for each channel, fetch recent videos, run `analyse_video()` per video which calls ingestion → NLP → storage in sequence. 5-second sleep between videos to avoid rate limits.
+
+**backtest.py** (repo root) — creator accuracy backtest. For each non-neutral `ticker_sentiments` call, fetches the stock's price at the video date vs `HORIZON_DAYS` (30) later via yfinance, scores raw-direction correctness (bullish=price rose, bearish=price fell), and stores per-call rows in `backtest_results`. Skips calls whose horizon hasn't elapsed yet (not enough future data) and groups price fetches by ticker (one yfinance call per ticker, not per call). Idempotent via upsert. Requires `yfinance`.
+
+## DuckDB schema
+
+```
+creators (id, channel_id UNIQUE, name, subscriber_count, created_at)
+  └── videos (id, creator_id FK, video_id UNIQUE, title, published_at, created_at)
+        └── ticker_sentiments (id, video_id FK, ticker, label, directional_score, sentence_count)
+              UNIQUE(video_id, ticker) — upserts on reprocess
+        └── transcript_segments (id, video_id FK, ticker, sentence, label, score)
+        └── ticker_reasons (id, video_id FK, ticker, reason)
+              populated offline by backfill_reasons.py; delete-then-insert per (video, ticker)
+        └── backtest_results (id, video_id FK, ticker, horizon_days, call, return_pct, correct)
+              UNIQUE(video_id, ticker, horizon_days) — populated by backtest.py, upserts on rerun
+```
+
+`directional_score` is signed: positive = bullish, negative = bearish (range roughly −1 to +1). `ticker_sentiments.label` and `score` reflect the per-video aggregate; `transcript_segments` stores one row per raw sentence for drill-down.
+
+## Key design decisions
+
+- **Sentence-level attribution**: avoids sentiment bleed between tickers; each ticker only scores sentences that mention it (plus context window).
+- **Recency weighting**: later sentences in a video carry more weight to capture the creator's current position rather than historical views mentioned early.
+- **0.6 confidence threshold**: FinBERT predictions below this are discarded as noise.
+- **Ambiguous tickers**: single-word company names that appear in everyday English are excluded from dictionary lookup and only matched via explicit `$TICKER` format.
+- **Known limitation**: FinBERT has no tense awareness — "I was bearish but now I'm bullish" treats both clauses equally, pulling scores toward neutral. Phase 2 plans temporal marker detection to address this.
