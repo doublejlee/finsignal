@@ -1,0 +1,11 @@
+# Render Blueprint for the FinSignal API.
+# Deploy: render.com -> New -> Blueprint -> connect this repo.
+# Reads the committed db/finsignal.duckdb; push a refreshed DB to redeploy with new data.
+services:
+  - type: web
+    name: finsignal-api
+    runtime: python
+    plan: free
+    branch: master
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT

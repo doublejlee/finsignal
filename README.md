@@ -56,9 +56,11 @@ python -m spacy download en_core_web_sm   # spaCy model isn't on PyPI
 `.env` at the repo root needs `YOUTUBE_API_KEY` and `GROQ_API_KEY` (and optionally
 `WEBSHARE_PROXY_USERNAME` / `WEBSHARE_PROXY_PASSWORD`).
 
-The root `requirements.txt` is intentionally minimal (`streamlit`, `duckdb`,
-`pandas`) — it's what Streamlit Community Cloud installs to serve the read-only
-dashboard, which needs none of the ML/ingestion stack.
+Three requirements files, one per deploy target (each minimal — the serving layers
+only read the committed DuckDB and need none of the ML/ingestion stack):
+- `requirements.txt` — Streamlit dashboard (Streamlit Community Cloud)
+- `requirements-api.txt` — FastAPI backend (Render; see `render.yaml`)
+- `requirements-pipeline.txt` — full local pipeline (ingestion, NLP, backtest)
 
 ## Running the pipeline
 

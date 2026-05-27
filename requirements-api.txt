@@ -1,0 +1,6 @@
+# Dependencies for the deployed FastAPI backend (Render).
+# The API only reads the committed DuckDB file — no ML/ingestion stack needed.
+fastapi==0.136.3
+uvicorn==0.48.0
+duckdb==1.5.3
+pandas==3.0.3
