@@ -5,6 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the project
 
 ```bash
+# Setup (first time)
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm   # spaCy model is not on PyPI
+
 # Stage 1 — ingestion + sentiment (run with VPN ON; YouTube blocks bare IPs)
 python main.py
 
@@ -13,6 +17,12 @@ python -m nlp.backfill_reasons
 
 # Stage 3 — creator accuracy backtest (yfinance prices vs each call, 30-day horizon)
 python backtest.py
+
+# API — serve stored analytics as JSON (run from repo root; interactive docs at /docs)
+uvicorn api.main:app --reload
+
+# Dashboard
+streamlit run dashboard/app.py
 
 # Initialize or verify DB schema
 python -m db.init
@@ -65,6 +75,9 @@ ingestion/ → nlp/ → db/ → (future) api/dashboard
 - `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, and per-creator backtest accuracy.
 
 **main.py** — orchestrates the pipeline: for each channel, fetch recent videos, run `analyse_video()` per video which calls ingestion → NLP → storage in sequence. 5-second sleep between videos to avoid rate limits.
+
+**api/**
+- `main.py` — FastAPI app, a thin read layer over `db/storage.py`. Endpoints: `/consensus`, `/tickers/top`, `/tickers/{ticker}/trend`, `/tickers/{ticker}/creators`, `/reasons`, `/creators/accuracy`. DataFrame results are round-tripped through `df.to_json` to native JSON types; tuple results are mapped to named dicts. Holds the DuckDB file, so don't run it alongside the pipeline.
 
 **backtest.py** (repo root) — creator accuracy backtest. For each non-neutral `ticker_sentiments` call, fetches the stock's price at the video date vs `HORIZON_DAYS` (30) later via yfinance, scores raw-direction correctness (bullish=price rose, bearish=price fell), and stores per-call rows in `backtest_results`. Skips calls whose horizon hasn't elapsed yet (not enough future data) and groups price fetches by ticker (one yfinance call per ticker, not per call). Idempotent via upsert. Requires `yfinance`.
 

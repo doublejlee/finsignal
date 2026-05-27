@@ -31,6 +31,7 @@ ingestion/  →  nlp/  →  db/  →  dashboard/
 - **Backtesting** — `yfinance` prices compared against each call over a 30-day
   horizon to compute per-creator hit rate.
 - **Storage** — DuckDB (chosen over SQLite for analytical query performance).
+- **API** — FastAPI read layer exposing the stored analytics as JSON endpoints.
 - **Dashboard** — Streamlit leaderboards: consensus, bullish/bearish, reasons,
   creator accuracy.
 
@@ -38,10 +39,19 @@ ingestion/  →  nlp/  →  db/  →  dashboard/
 
 ## Stack
 
-Python · FinBERT · HuggingFace Transformers · spaCy · DuckDB · Streamlit ·
+Python · FinBERT · HuggingFace Transformers · spaCy · DuckDB · FastAPI · Streamlit ·
 Groq (Llama 3.3 70B) · yfinance · youtube-transcript-api · YouTube Data API v3
 
 ---
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm   # spaCy model isn't on PyPI
+```
+
+`.env` at the repo root needs `YOUTUBE_API_KEY` and `GROQ_API_KEY`.
 
 ## Running the pipeline
 
@@ -57,6 +67,9 @@ python -m nlp.backfill_reasons
 
 # Stage 3 — creator accuracy backtest     (yfinance prices vs each call)
 python backtest.py
+
+# API — serve stored analytics as JSON (interactive docs at http://localhost:8000/docs)
+uvicorn api.main:app --reload
 
 # Dashboard
 streamlit run dashboard/app.py
