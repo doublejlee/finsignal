@@ -23,3 +23,6 @@ data/
 
 # Model cache (HuggingFace downloads models here, large files)
 .cache/
+
+# graphify knowledge-graph artifacts (generated)
+graphify-out/

@@ -12,7 +12,7 @@ from datetime import date, timedelta
 import yfinance as yf
 
 from db.init import get_connection
-from db.storage import store_backtest_result
+from db.storage import store_backtest_result, promote_creators
 
 HORIZON_DAYS = 30
 NEUTRAL_THRESHOLD = 0.05
@@ -114,6 +114,15 @@ def run():
             print(f"  [{mark}] {ticker:<6} {call:<8} {return_pct:+6.1f}%{bench} (video {video_id})")
 
     print(f"\nDone. {evaluated} calls evaluated, {skipped} skipped (horizon not elapsed or no data).")
+
+    # Now that beat_benchmark is fresh, see if any candidate creator has earned tracking.
+    promoted = promote_creators()
+    if promoted:
+        for p in promoted:
+            print(f"  PROMOTED {p['creator']} -> tracked "
+                  f"({p['calls']} calls, Wilson LB {p['wilson_lower_pct']}% beat SPY)")
+    else:
+        print("  No candidates cleared the promotion threshold.")
 
 if __name__ == "__main__":
     run()

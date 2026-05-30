@@ -1,9 +1,12 @@
+import sys
+sys.stdout.reconfigure(encoding="utf-8")  # titles can contain emoji; avoid cp1252 console crashes
+
 from ingestion.youtube_fetcher import get_transcript
 from nlp.ticker_extractor import extract_tickers
 from nlp.sentiment import analyse_sentiment_for_ticker
 from db.storage import get_or_create_creator, get_or_create_video, store_ticker_sentiment, store_transcript_segments
 from db.init import init_schema
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 
 def directional_score(label, score):
@@ -57,34 +60,61 @@ def analyse_video(video_id, channel_id="unknown", creator_name="unknown", title=
 
 
 if __name__ == "__main__":
-    from ingestion.channel_fetcher import get_recent_videos
-    
+    from ingestion.channel_fetcher import get_recent_videos, resolve_handle
+
     init_schema()
-    
-    # Channels to track
-    channels = [
-    {"channel_id": "UCUvvj5lwue7PspotMDjk5UA", "name": "Meet Kevin"},
-    {"channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg", "name": "Andrei Jikh"},
-    {"channel_id": "UCbta0n8i6Rljh0obO7HzG9A", "name": "Joseph Carlson"},
-]
-    
-    for channel in channels:
+
+    # Creators to track, by YouTube @handle (resolved to channel IDs at runtime).
+    HANDLES = [
+        "@MeetKevin",
+        "@AndreiJikh",
+        "@JosephCarlsonShow",
+        "@everythingmoney",
+        "@ChipStockInvestor",
+        "@FinancialEducation",  # Jeremy Lefebvre
+        "@tomnashtv",           # Tom Nash (668K, Stock-MVP); @TomNash is a dormant 2010 channel, not him
+    ]
+
+    # Videos pulled per channel.
+    MAX_VIDEOS_PER_CHANNEL = 15
+
+    # Only pull videos already past the backtest's 30-day horizon (+1-day buffer), so every
+    # ingested video is immediately evaluable. Frequent posters (e.g. Meet Kevin) otherwise
+    # yield only un-scorable last-week uploads. Newer videos get picked up on later runs as
+    # they age past the horizon. Keep this in sync with backtest.HORIZON_DAYS.
+    BACKTEST_HORIZON_DAYS = 30
+    cutoff = datetime.now(timezone.utc) - timedelta(days=BACKTEST_HORIZON_DAYS + 1)
+    published_before = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"Pulling up to {MAX_VIDEOS_PER_CHANNEL} videos per channel published before "
+          f"{published_before} (evaluable history).")
+
+    for handle in HANDLES:
         print(f"\n{'='*50}")
-        print(f"Processing channel: {channel['name']}")
+        print(f"Processing channel: {handle}")
         print(f"{'='*50}")
-        
-        videos = get_recent_videos(channel["channel_id"], max_results=2)
-        
-        
+
+        try:
+            channel_id = resolve_handle(handle)
+        except Exception as e:
+            print(f"Skipping {handle}: {e}")
+            continue
+
+        videos = get_recent_videos(channel_id, max_results=MAX_VIDEOS_PER_CHANNEL,
+                                   published_before=published_before)
+        if not videos:
+            print(f"No videos found for {handle}")
+            continue
+
+        creator_name = videos[0]["channel_name"]
+
         for video in videos:
             try:
-             analyse_video(video["video_id"],
-                           channel_id=channel["channel_id"],
-                           creator_name=channel["name"],
-                           title=video["title"],
-                           published_at=video["published_at"]
-                           )
-             time.sleep(5)  # wait 5 seconds between videos
+                analyse_video(video["video_id"],
+                              channel_id=channel_id,
+                              creator_name=creator_name,
+                              title=video["title"],
+                              published_at=video["published_at"])
+                time.sleep(5)  # wait 5 seconds between videos
             except Exception as e:
-             print(f"Skipping {video['video_id']}: {e}")
-             continue
+                print(f"Skipping {video['video_id']}: {e}")
+                continue

@@ -207,6 +207,109 @@ def get_screening_leaderboard(min_calls: int = MIN_ELIGIBLE_CALLS):
         df = df.sort_values(["eligible", "wilson_lower_pct"], ascending=[False, False]).reset_index(drop=True)
     return df
 
+def promote_creators(threshold: float = 0.5, min_calls: int = MIN_ELIGIBLE_CALLS) -> list:
+    """Flip 'candidate' creators to 'tracked' once they prove out on the backtest.
+
+    A candidate is promoted when it has at least `min_calls` benchmark-scored calls and
+    its Wilson lower-bound beat-SPY rate clears `threshold` — the same conservative metric
+    get_screening_leaderboard ranks on. The threshold of 0.5 means we promote only when we
+    can say, with 95% confidence, the creator beats SPY more often than not. Promotion is
+    one-way here; demotion is left to manual review.
+
+    Returns a list of dicts (one per creator promoted in this run); empty if none qualified.
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT cr.id, cr.name,
+               COUNT(*) AS n,
+               SUM(CASE WHEN b.beat_benchmark THEN 1 ELSE 0 END) AS beats
+        FROM backtest_results b
+        JOIN videos v ON b.video_id = v.id
+        JOIN creators cr ON v.creator_id = cr.id
+        WHERE b.beat_benchmark IS NOT NULL AND cr.status = 'candidate'
+        GROUP BY cr.id, cr.name
+    """).fetchall()
+
+    promoted = []
+    for creator_id, name, n, beats in rows:
+        beats = int(beats or 0)
+        if n < min_calls:
+            continue
+        wilson = _wilson_lower_bound(beats, n)
+        if wilson >= threshold:
+            conn.execute("UPDATE creators SET status = 'tracked' WHERE id = ?", [creator_id])
+            promoted.append({
+                "creator": name,
+                "calls": n,
+                "beat_spy_pct": round(100.0 * beats / n, 1),
+                "wilson_lower_pct": round(100.0 * wilson, 1),
+            })
+
+    if promoted:
+        conn.commit()
+    return promoted
+
+def get_out_of_sample_validation(split_fraction: float = 0.5, min_per_split: int = 10):
+    """Temporal hold-out check: does in-sample beat-SPY skill persist out-of-sample?
+
+    For each creator, benchmark-scored calls are ordered by video date and split at
+    `split_fraction` (default: oldest 50% = in-sample 'train', newest 50% = out-of-sample
+    'holdout'). We report the beat-SPY rate and Wilson lower bound for each half. A creator
+    who screens well in-sample but collapses out-of-sample is a sign the leaderboard ranking
+    reflects luck rather than durable skill — the whole point of screening on a hold-out.
+
+    Splitting per creator (rather than on one global cutoff date) keeps both halves balanced
+    despite uneven histories. Creators with fewer than `min_per_split` calls in either half
+    are excluded — the split can't say anything reliable about them. Returns a DataFrame,
+    one row per evaluable creator.
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT cr.name,
+               CASE WHEN b.beat_benchmark THEN 1 ELSE 0 END AS beat
+        FROM backtest_results b
+        JOIN videos v ON b.video_id = v.id
+        JOIN creators cr ON v.creator_id = cr.id
+        WHERE b.beat_benchmark IS NOT NULL AND v.published_at IS NOT NULL
+        ORDER BY cr.name, v.published_at
+    """).fetchall()
+
+    by_creator = {}
+    for name, beat in rows:
+        by_creator.setdefault(name, []).append(int(beat))
+
+    def _summary(arr):
+        k, m = sum(arr), len(arr)
+        return m, round(100.0 * k / m, 1), round(100.0 * _wilson_lower_bound(k, m), 1)
+
+    records = []
+    for name, beats in by_creator.items():
+        cut = int(len(beats) * split_fraction)
+        in_sample, oos = beats[:cut], beats[cut:]
+        if len(in_sample) < min_per_split or len(oos) < min_per_split:
+            continue
+        is_m, is_pct, is_wlb = _summary(in_sample)
+        oos_m, oos_pct, oos_wlb = _summary(oos)
+        records.append({
+            "creator": name,
+            "in_sample_calls": is_m,
+            "in_sample_beat_pct": is_pct,
+            "in_sample_wilson_pct": is_wlb,
+            "oos_calls": oos_m,
+            "oos_beat_pct": oos_pct,
+            "oos_wilson_pct": oos_wlb,
+            "delta_pct": round(oos_pct - is_pct, 1),
+            "persisted": oos_pct >= 50.0,
+        })
+
+    df = pd.DataFrame(records, columns=[
+        "creator", "in_sample_calls", "in_sample_beat_pct", "in_sample_wilson_pct",
+        "oos_calls", "oos_beat_pct", "oos_wilson_pct", "delta_pct", "persisted",
+    ])
+    if not df.empty:
+        df = df.sort_values("in_sample_wilson_pct", ascending=False).reset_index(drop=True)
+    return df
+
 def get_reasons_by_ticker():
     """Distinct reason phrases per ticker, aggregated across all videos."""
     conn = get_connection()

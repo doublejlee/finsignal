@@ -64,6 +64,10 @@ def creator_accuracy(horizon_days: int = Query(30, ge=1)):
 def screen(min_calls: int = Query(30, ge=1)):
     return _records(storage.get_screening_leaderboard(min_calls=min_calls))
 
+@app.get("/validate")
+def validate(min_per_split: int = Query(10, ge=1)):
+    return _records(storage.get_out_of_sample_validation(min_per_split=min_per_split))
+
 @app.get("/ask")
 def ask(q: str = Query(..., min_length=3)):
     # Lazy import: rag pulls in sentence-transformers/torch, which the lightweight

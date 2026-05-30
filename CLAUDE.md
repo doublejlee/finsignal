@@ -17,7 +17,12 @@ python main.py
 python -m nlp.backfill_reasons
 
 # Stage 3 — creator accuracy backtest (yfinance prices vs each call, 30-day horizon)
+# Also auto-promotes candidate creators to 'tracked' once they clear the screening bar.
 python backtest.py
+
+# Out-of-sample validation — split each creator's calls in half by date and check whether
+# in-sample beat-SPY skill persists out-of-sample (guards against overfit leaderboard ranks)
+python validate.py
 
 # Or run all three stages in order with VPN-toggle prompts:
 python refresh.py
@@ -86,14 +91,16 @@ ingestion/ → nlp/ → db/ → (future) api/dashboard
 
 **db/**
 - `init.py` — DuckDB schema (7 tables + indexes). DB file lives at `db/finsignal.duckdb`. Each function opens a new connection via `get_connection()`.
-- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, per-creator backtest accuracy, and the creator-screening leaderboard (`get_screening_leaderboard`: beat-SPY rate ranked by Wilson lower bound, with a min-calls eligibility gate).
+- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, per-creator backtest accuracy, the creator-screening leaderboard (`get_screening_leaderboard`: beat-SPY rate ranked by Wilson lower bound, with a min-calls eligibility gate), `promote_creators` (flips `candidate`→`tracked` when a creator's Wilson lower bound clears a threshold, default 0.5, with the same min-calls gate; called at the end of `backtest.py`), and `get_out_of_sample_validation` (per-creator temporal hold-out: oldest-half in-sample vs newest-half out-of-sample beat-SPY rates, to check ranking durability).
 
 **main.py** — orchestrates the pipeline: for each channel, fetch recent videos, run `analyse_video()` per video which calls ingestion → NLP → storage in sequence. 5-second sleep between videos to avoid rate limits.
 
 **api/**
-- `main.py` — FastAPI app, a thin read layer over `db/storage.py`. Endpoints: `/consensus`, `/tickers/top`, `/tickers/{ticker}/trend`, `/tickers/{ticker}/creators`, `/reasons`, `/creators/accuracy`, `/ask`, `/screen`. DataFrame results are round-tripped through `df.to_json` to native JSON types; tuple results are mapped to named dicts. `/ask` lazy-imports `nlp.rag` so the lightweight cloud deploy (no torch) still imports and serves the other endpoints; it degrades to an "unavailable" message there. Holds the DuckDB file, so don't run it alongside the pipeline.
+- `main.py` — FastAPI app, a thin read layer over `db/storage.py`. Endpoints: `/consensus`, `/tickers/top`, `/tickers/{ticker}/trend`, `/tickers/{ticker}/creators`, `/reasons`, `/creators/accuracy`, `/ask`, `/screen`, `/validate`. DataFrame results are round-tripped through `df.to_json` to native JSON types; tuple results are mapped to named dicts. `/ask` lazy-imports `nlp.rag` so the lightweight cloud deploy (no torch) still imports and serves the other endpoints; it degrades to an "unavailable" message there. Holds the DuckDB file, so don't run it alongside the pipeline.
 
-**backtest.py** (repo root) — creator accuracy backtest. For each non-neutral `ticker_sentiments` call, fetches the stock's price at the video date vs `HORIZON_DAYS` (30) later via yfinance, scores raw-direction correctness (bullish=price rose, bearish=price fell), and stores per-call rows in `backtest_results`. Also fetches SPY once and records each call's benchmark return and whether it beat the benchmark (`beat_benchmark`) — the metric the Phase 5 screening leaderboard ranks on. Skips calls whose horizon hasn't elapsed yet (not enough future data) and groups price fetches by ticker (one yfinance call per ticker, not per call). Idempotent via upsert. Requires `yfinance`.
+**backtest.py** (repo root) — creator accuracy backtest. For each non-neutral `ticker_sentiments` call, fetches the stock's price at the video date vs `HORIZON_DAYS` (30) later via yfinance, scores raw-direction correctness (bullish=price rose, bearish=price fell), and stores per-call rows in `backtest_results`. Also fetches SPY once and records each call's benchmark return and whether it beat the benchmark (`beat_benchmark`) — the metric the Phase 5 screening leaderboard ranks on. Skips calls whose horizon hasn't elapsed yet (not enough future data) and groups price fetches by ticker (one yfinance call per ticker, not per call). Idempotent via upsert. Requires `yfinance`. After scoring, calls `promote_creators()` so any candidate that has earned its `tracked` status flips automatically.
+
+**validate.py** (repo root) — out-of-sample validation runner over `get_out_of_sample_validation`. Read-only; splits each creator's benchmark-scored calls in half by date and prints whether in-sample beat-SPY skill persisted out-of-sample. Run after `backtest.py`.
 
 ## DuckDB schema
 
