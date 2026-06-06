@@ -26,3 +26,9 @@ data/
 
 # graphify knowledge-graph artifacts (generated)
 graphify-out/
+
+# DuckDB write-ahead log (transient; checkpoints into the .duckdb file)
+*.wal
+
+# RAG embeddings — large (~50MB), regenerable local index; not deployed (see db/init.py)
+db/embeddings.duckdb

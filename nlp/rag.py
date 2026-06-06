@@ -9,7 +9,7 @@ import re
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from db.init import get_connection
+from db.init import get_connection, EMBEDDINGS_DB_PATH
 
 load_dotenv()
 
@@ -51,11 +51,19 @@ def _embed_query(query: str) -> np.ndarray:
         )
 
 def retrieve(query: str, top_k: int = 8) -> list:
-    """Return the top_k stored sentences most similar to the query (cosine)."""
+    """Return the top_k stored sentences most similar to the query (cosine).
+
+    Embeddings live in a separate, local-only DB (EMBEDDINGS_DB_PATH); it's absent on the
+    cloud deploy, so retrieval there returns nothing and Ask degrades gracefully.
+    """
+    if not EMBEDDINGS_DB_PATH.exists():
+        return []
+
     conn = get_connection()
+    conn.execute(f"ATTACH '{EMBEDDINGS_DB_PATH.as_posix()}' AS emb (READ_ONLY)")
     rows = conn.execute("""
         SELECT se.embedding, ts.sentence, ts.ticker, c.name, v.video_id
-        FROM sentence_embeddings se
+        FROM emb.sentence_embeddings se
         JOIN transcript_segments ts ON se.segment_id = ts.id
         JOIN videos v ON ts.video_id = v.id
         JOIN creators c ON v.creator_id = c.id

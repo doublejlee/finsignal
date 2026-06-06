@@ -37,9 +37,10 @@ ingestion/  →  nlp/  →  db/  →  dashboard/
 - **Ask (RAG)** — embeds stored sentences (`all-MiniLM-L6-v2`), retrieves those most
   relevant to a plain-English question, and asks Groq for an answer grounded in them
   with citations back to the source creator/ticker.
-- **Screening** — scores each call against SPY (beat/lag), then ranks creators by the
-  Wilson lower-bound of their beat-the-benchmark rate (conservative — penalizes small
-  samples), with a minimum-calls eligibility gate.
+- **Screening** — scores each call against SPY (beat/lag), ranks creators by the Wilson
+  lower-bound of their beat-the-benchmark rate (penalizes small samples) behind a
+  minimum-calls eligibility gate, auto-promotes candidates that clear the bar, and
+  checks ranking durability out-of-sample with a temporal hold-out.
 - **Storage** — DuckDB (chosen over SQLite for analytical query performance).
 - **API** — FastAPI read layer exposing the stored analytics as JSON endpoints.
 - **Dashboard** — Streamlit leaderboards: consensus, bullish/bearish, reasons,
@@ -52,6 +53,57 @@ ingestion/  →  nlp/  →  db/  →  dashboard/
 Python · FinBERT · HuggingFace Transformers · spaCy · sentence-transformers · DuckDB ·
 FastAPI · Streamlit · Groq (Llama 3.3 70B) · yfinance · youtube-transcript-api ·
 YouTube Data API v3
+
+---
+
+## Results: does the signal actually hold up?
+
+The headline feature isn't sentiment scoring — it's asking, honestly, **whether
+finance-YouTube calls actually beat the market, and whether any edge persists
+out-of-sample.** The screening layer is deliberately built to be hard to fool:
+
+- **Benchmark-relative, not raw direction.** A call only counts as correct if it beats
+  SPY over the same 30-day window — "the stock went up" is worthless in a bull market.
+- **Wilson lower bound, not naïve hit rate.** Creators are ranked by the lower bound of
+  a Wilson score interval, which penalizes small samples — so 10/15 can't outrank 55/94.
+- **Eligibility gate.** A creator needs ≥30 benchmark-scored calls before they rank at
+  all; everyone else is shown but flagged unproven.
+- **Out-of-sample validation.** Each creator's calls are split in half by date; in-sample
+  skill has to *persist* on the held-out newer half, or the ranking is treated as overfit.
+
+![Creator screening: raw beat-SPY rate vs Wilson lower bound](assets/screening.png)
+
+**Reading the chart (live snapshot, 8 creators / 404 evaluated calls):** seven creators
+now clear the 30-call gate. Raw beat-SPY rates look tempting across the board, but the
+Wilson bound (the tail of each lollipop) discounts thin samples toward 50%. **Everything
+Money** is the first creator promoted from `candidate` to `tracked` — Wilson LB **52%**
+over 50 calls, the only one whose *lower* bound clears break-even.
+
+**The out-of-sample test is where it gets interesting.** Splitting each creator's calls
+in half by date and checking whether in-sample skill survives on held-out newer data,
+**only 2 of 7 persist:**
+
+| Creator | In-sample | Out-of-sample | |
+|---|---|---|---|
+| Everything Money | 60% | **72%** | ✅ persists |
+| Joseph Carlson | 56% | **61%** | ✅ persists |
+| Ticker Symbol: YOU | 69% | 47% | ❌ collapses |
+| Meet Kevin | 67% | 44% | ❌ collapses |
+| Parkev Tatevosian | 47% | 25% | ❌ collapses |
+
+Several creators with the *juiciest* in-sample rates (Ticker Symbol YOU 69%, Meet Kevin
+67%) fall apart out-of-sample — which is exactly the point. In-sample performance is
+mostly noise; the hold-out separates it from durable skill, and most apparent skill
+doesn't survive.
+
+**What this shows / doesn't show.** This is the apparatus to *measure* creator skill
+rigorously — not a claim that finance YouTubers print alpha. Two creators surviving
+out-of-sample on ~50 calls each is suggestive, not proof; the value is a screen that
+actively catches its own false positives rather than overfitting a leaderboard. Sample
+grows over time (the 30-day horizon means a video only becomes evaluable a month after
+upload).
+
+> Regenerate the figure from the live DB: `python assets/make_screening_chart.py`
 
 ---
 
@@ -130,9 +182,10 @@ streamlit run dashboard/app.py
 - [x] **Phase 4** — "Ask FinSignal" RAG: semantic retrieval over creator sentences +
       grounded Groq answers with citations. Cloud serving via HuggingFace Inference API
       (torch-free); falls back to local sentence-transformers when HF is unreachable.
-- [~] **Phase 5** — Creator screening: benchmark-relative backtest + Wilson-bound
-      ranking with an eligibility gate. Scoring/surfacing done; promotion and a deeper
-      candidate pool (out-of-sample validation) pending.
+- [x] **Phase 5** — Creator screening: benchmark-relative backtest, Wilson-bound ranking
+      behind an eligibility gate, candidate→tracked auto-promotion, and out-of-sample
+      (temporal hold-out) validation. Roster curated toward stock-pickers with enough
+      evaluable calls to screen.
 
 ---
 

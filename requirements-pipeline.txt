@@ -31,5 +31,8 @@ requests==2.34.2
 # Backtesting
 yfinance==1.4.0
 
+# Reporting (README screening chart only — not needed for serving)
+matplotlib==3.10.9
+
 # Config
 python-dotenv==1.2.2

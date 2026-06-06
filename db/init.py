@@ -2,10 +2,34 @@ import duckdb
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "finsignal.duckdb"
+# RAG vectors live in their own file, gitignored and not deployed: they're a large
+# (~50MB+), regenerable local index that the cloud serving layer never reads, and bundling
+# them pushed the committed DB past GitHub's 100MB limit. Rebuild with backfill_embeddings.
+EMBEDDINGS_DB_PATH = Path(__file__).parent / "embeddings.duckdb"
 
 def get_connection():
-    """Get or create DuckDB connection."""
+    """Get or create the main DuckDB connection (serving data)."""
     return duckdb.connect(str(DB_PATH))
+
+def get_embeddings_connection():
+    """Connection to the local-only RAG embeddings DB (see EMBEDDINGS_DB_PATH)."""
+    return duckdb.connect(str(EMBEDDINGS_DB_PATH))
+
+def init_embeddings_schema():
+    """Create the sentence_embeddings table in the separate embeddings DB (idempotent)."""
+    conn = get_embeddings_connection()
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_sentence_embeddings START 1")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sentence_embeddings (
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_sentence_embeddings'),
+            segment_id INTEGER NOT NULL,
+            embedding FLOAT[384] NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(segment_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sentence_embeddings_segment_id ON sentence_embeddings(segment_id)")
+    conn.commit()
 
 def init_schema():
     """Initialize database schema."""
@@ -17,8 +41,7 @@ def init_schema():
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_segments START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_ticker_reasons START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_backtest_results START 1")
-    conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_sentence_embeddings START 1")
-    
+
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS creators (
@@ -102,16 +125,7 @@ def init_schema():
         )
     """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sentence_embeddings (
-            id INTEGER PRIMARY KEY DEFAULT nextval('seq_sentence_embeddings'),
-            segment_id INTEGER NOT NULL,
-            embedding FLOAT[384] NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (segment_id) REFERENCES transcript_segments(id),
-            UNIQUE(segment_id)
-        )
-    """)
+    # sentence_embeddings now lives in a separate, gitignored DB — see init_embeddings_schema().
 
     # Migrations for columns added after initial release (idempotent)
     def _columns(table):
@@ -137,7 +151,6 @@ def init_schema():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_reasons_ticker ON ticker_reasons(ticker)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ticker_reasons_video_id ON ticker_reasons(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_results_video_id ON backtest_results(video_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sentence_embeddings_segment_id ON sentence_embeddings(segment_id)")
 
     conn.commit()
     print("Database schema initialized")

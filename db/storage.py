@@ -32,6 +32,41 @@ def get_or_create_creator(channel_id: str, name: str, subscriber_count: int = No
 
     return result[0][0]
 
+def delete_creator(name: str) -> dict:
+    """Delete a creator and all rows that hang off them, children-first (DuckDB enforces FKs).
+
+    Cascade: sentence_embeddings -> transcript_segments / ticker_sentiments / ticker_reasons /
+    backtest_results (all keyed on the creator's videos) -> videos -> the creator row.
+    Matches on exact creator name; raises if it isn't unique so a typo can't wipe the wrong
+    creator. Returns per-table delete counts. Destructive — the DB is in git, so a bad call
+    is recoverable from history.
+    """
+    conn = get_connection()
+    ids = conn.execute("SELECT id FROM creators WHERE name = ?", [name]).fetchall()
+    if not ids:
+        raise ValueError(f"No creator named {name!r}")
+    if len(ids) > 1:
+        raise ValueError(f"{len(ids)} creators named {name!r}; refusing to guess which to delete")
+    creator_id = ids[0][0]
+
+    video_ids = [r[0] for r in conn.execute(
+        "SELECT id FROM videos WHERE creator_id = ?", [creator_id]).fetchall()]
+
+    deleted = {}
+    if video_ids:
+        placeholders = ",".join("?" * len(video_ids))
+        deleted["sentence_embeddings"] = conn.execute(
+            f"DELETE FROM sentence_embeddings WHERE segment_id IN "
+            f"(SELECT id FROM transcript_segments WHERE video_id IN ({placeholders}))",
+            video_ids).fetchall()
+        for tbl in ["transcript_segments", "ticker_sentiments", "ticker_reasons", "backtest_results"]:
+            conn.execute(f"DELETE FROM {tbl} WHERE video_id IN ({placeholders})", video_ids)
+    conn.execute("DELETE FROM videos WHERE creator_id = ?", [creator_id])
+    conn.execute("DELETE FROM creators WHERE id = ?", [creator_id])
+    conn.commit()
+
+    return {"creator": name, "creator_id": creator_id, "videos_deleted": len(video_ids)}
+
 def get_or_create_video(creator_id: int, video_id: str, title: str, published_at: datetime = None) -> int:
     """Get or create video, returns video_id (database id)."""
     conn = get_connection()
@@ -106,13 +141,39 @@ def store_ticker_reasons(video_id: int, ticker: str, reasons: list):
         )
     conn.commit()
 
-def get_consensus_scores(min_creators: int = 1):
-    """Aggregate sentiment across all creators per ticker."""
+def _recency_weight_sql(half_life_days: float) -> str:
+    """SQL expression for an exponential recency weight on a video: 0.5 ** (age_days/half).
+
+    A take loses half its weight every `half_life_days`, so a stale opinion counts less
+    toward the *current* view than a fresh one. Undated videos (NULL published_at) are
+    treated as very old (≈0 weight). half_life_days is cast to float by the caller, so
+    inlining it is injection-safe. NB: this is for opinion/consensus aggregation only —
+    the backtest must never recency-weight a creator's calls (a past call's correctness is
+    a fact, and decaying it would discard out-of-sample evidence and shrink the sample).
+    """
+    hl = float(half_life_days)
+    age = "COALESCE(date_diff('day', v.published_at, CURRENT_TIMESTAMP), 9999)"
+    return f"pow(0.5, {age} / {hl})"
+
+def get_consensus_scores(min_creators: int = 1, half_life_days: float = 30.0):
+    """Aggregate sentiment across all creators per ticker.
+
+    When `half_life_days` is set (default 30), `avg_score` is a recency-weighted mean so a
+    months-old take doesn't read the same as last week's. Pass `half_life_days=None` for a
+    plain average. Counts (creator_count, bullish/bearish/neutral) stay raw — they describe
+    total evidence; only the score is time-decayed.
+    """
     conn = get_connection()
-    return conn.execute("""
+    if half_life_days:
+        w = _recency_weight_sql(half_life_days)
+        avg_expr = f"ROUND(SUM(({w}) * ts.directional_score) / NULLIF(SUM({w}), 0), 3)"
+    else:
+        avg_expr = "ROUND(AVG(ts.directional_score), 3)"
+
+    return conn.execute(f"""
         SELECT
             ts.ticker,
-            ROUND(AVG(ts.directional_score), 3)          AS avg_score,
+            {avg_expr}                                    AS avg_score,
             COUNT(DISTINCT c.id)                          AS creator_count,
             SUM(CASE WHEN ts.directional_score >  0.05 THEN 1 ELSE 0 END) AS bullish,
             SUM(CASE WHEN ts.directional_score < -0.05 THEN 1 ELSE 0 END) AS bearish,
@@ -122,7 +183,7 @@ def get_consensus_scores(min_creators: int = 1):
         JOIN creators c ON v.creator_id = c.id
         GROUP BY ts.ticker
         HAVING COUNT(DISTINCT c.id) >= ?
-        ORDER BY ABS(AVG(ts.directional_score)) DESC
+        ORDER BY ABS(avg_score) DESC
     """, [min_creators]).fetchdf()
 
 def store_backtest_result(video_id: int, ticker: str, horizon_days: int, call: str, return_pct: float, correct: bool,
@@ -324,30 +385,29 @@ def get_reasons_by_ticker():
         ORDER BY ticker
     """).fetchdf()
 
-def get_top_tickers(limit: int = 10, direction: str = "bullish") -> list:
-    """Get top bullish or bearish tickers across all videos."""
+def get_top_tickers(limit: int = 10, direction: str = "bullish", half_life_days: float = 30.0) -> list:
+    """Get top bullish or bearish tickers across all videos.
+
+    A mention is classed bullish/bearish by its raw sentiment; its contribution to the
+    ranking score is recency-weighted when `half_life_days` is set (default 30), so fresh
+    takes dominate the board. `video_count` stays a raw count. `half_life_days=None` sums
+    raw scores.
+    """
     conn = get_connection()
+    score = f"({_recency_weight_sql(half_life_days)}) * ts.directional_score" if half_life_days \
+        else "ts.directional_score"
+    where, order = ("ts.directional_score > 0", "DESC") if direction == "bullish" \
+        else ("ts.directional_score < 0", "ASC")
 
-    if direction == "bullish":
-        query = """
-            SELECT ticker, SUM(directional_score) as total_score, COUNT(*) as video_count
-            FROM ticker_sentiments
-            WHERE directional_score > 0
-            GROUP BY ticker
-            ORDER BY total_score DESC
-            LIMIT ?
-        """
-    else:  # bearish
-        query = """
-            SELECT ticker, SUM(directional_score) as total_score, COUNT(*) as video_count
-            FROM ticker_sentiments
-            WHERE directional_score < 0
-            GROUP BY ticker
-            ORDER BY total_score ASC
-            LIMIT ?
-        """
-
-    return conn.execute(query, [limit]).fetchall()
+    return conn.execute(f"""
+        SELECT ts.ticker, SUM({score}) AS total_score, COUNT(*) AS video_count
+        FROM ticker_sentiments ts
+        JOIN videos v ON ts.video_id = v.id
+        WHERE {where}
+        GROUP BY ts.ticker
+        ORDER BY total_score {order}
+        LIMIT ?
+    """, [limit]).fetchall()
 
 def get_ticker_sentiment_over_time(ticker: str):
     """Get sentiment trend for a ticker over time."""

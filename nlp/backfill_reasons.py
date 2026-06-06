@@ -35,7 +35,15 @@ def backfill():
             store_ticker_reasons(video_id, ticker, reasons)
             print(f"  {ticker} (video {video_id}): {', '.join(reasons)}")
         except Exception as e:
+            msg = str(e)
             print(f"  {ticker} (video {video_id}) FAILED: {e}")
+            # A daily-token cap (TPD) can't be waited out in-run and every remaining call will
+            # fail the same way — stop instead of grinding through hundreds of failures. The
+            # backfill is resumable, so re-run after the daily reset (or swap models).
+            if "tokens per day" in msg or "TPD" in msg:
+                print("\nHit Groq's daily token limit for this model. Stopping — already-saved "
+                      "reasons are kept; re-run after the daily reset to finish the rest.")
+                break
 
         time.sleep(2)  # stay under Groq free-tier rate limit (~30/min)
 

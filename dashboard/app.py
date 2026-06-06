@@ -3,13 +3,25 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pandas as pd
 from db.init import get_connection
-from db.storage import get_consensus_scores, get_reasons_by_ticker, get_creator_accuracy, get_screening_leaderboard
+from db.storage import (get_consensus_scores, get_top_tickers, get_reasons_by_ticker,
+                        get_creator_accuracy, get_screening_leaderboard)
 
 st.set_page_config(page_title="FinSignal", layout="wide")
 st.title("FinSignal — Financial Sentiment Dashboard")
 
 conn = get_connection()
+
+# Recency control for the "current view" surfaces (consensus + top tickers). Opinions decay:
+# a take loses half its weight every HALF_LIFE days, so the board reflects the current
+# stance, not months-old calls. (Backtest/screening are deliberately NOT decayed.)
+HALF_LIFE = st.sidebar.slider("Opinion recency half-life (days)", 7, 180, 30, step=1,
+                              help="Older takes are down-weighted by 0.5 every N days. "
+                                   "Backtest & screening are unaffected — they measure historical skill.")
+_latest = conn.execute("SELECT MAX(published_at) FROM videos").fetchone()[0]
+if _latest:
+    st.sidebar.caption(f"Freshest take as of **{str(_latest)[:10]}**")
 
 # Ask FinSignal (RAG)
 st.subheader("Ask FinSignal")
@@ -56,8 +68,9 @@ st.divider()
 
 # Consensus scores
 st.subheader("Consensus Scores")
-st.caption("Aggregated across all creators — ordered by signal strength")
-consensus = get_consensus_scores(min_creators=1)
+st.caption(f"Aggregated across all creators, recency-weighted ({HALF_LIFE}-day half-life) — "
+           "ordered by current signal strength")
+consensus = get_consensus_scores(min_creators=1, half_life_days=HALF_LIFE)
 if consensus.empty:
     st.info("No consensus data yet — run the pipeline on more videos")
 else:
@@ -78,17 +91,13 @@ else:
 
 st.divider()
 
-# Top bullish tickers
-st.subheader("Top Bullish Tickers")
-bullish = conn.execute("""
-    SELECT ticker, SUM(directional_score) as total_score, COUNT(*) as video_count
-    FROM ticker_sentiments
-    WHERE directional_score > 0
-    GROUP BY ticker
-    ORDER BY total_score DESC
-    LIMIT 10
-""").fetchdf()
+_top_cols = ["ticker", "total_score", "video_count"]
 
+# Top bullish tickers (recency-weighted, same half-life as consensus)
+st.subheader("Top Bullish Tickers")
+st.caption(f"Recency-weighted ({HALF_LIFE}-day half-life)")
+bullish = pd.DataFrame(get_top_tickers(limit=10, direction="bullish", half_life_days=HALF_LIFE),
+                       columns=_top_cols)
 if bullish.empty:
     st.info("No bullish data yet — run the pipeline on more videos")
 else:
@@ -96,15 +105,9 @@ else:
 
 # Top bearish tickers
 st.subheader("Top Bearish Tickers")
-bearish = conn.execute("""
-    SELECT ticker, SUM(directional_score) as total_score, COUNT(*) as video_count
-    FROM ticker_sentiments
-    WHERE directional_score < 0
-    GROUP BY ticker
-    ORDER BY total_score ASC
-    LIMIT 10
-""").fetchdf()
-
+st.caption(f"Recency-weighted ({HALF_LIFE}-day half-life)")
+bearish = pd.DataFrame(get_top_tickers(limit=10, direction="bearish", half_life_days=HALF_LIFE),
+                       columns=_top_cols)
 if bearish.empty:
     st.info("No bearish data yet — run the pipeline on more videos")
 else:

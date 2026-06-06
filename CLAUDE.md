@@ -91,7 +91,7 @@ ingestion/ → nlp/ → db/ → (future) api/dashboard
 
 **db/**
 - `init.py` — DuckDB schema (7 tables + indexes). DB file lives at `db/finsignal.duckdb`. Each function opens a new connection via `get_connection()`.
-- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, per-creator backtest accuracy, the creator-screening leaderboard (`get_screening_leaderboard`: beat-SPY rate ranked by Wilson lower bound, with a min-calls eligibility gate), `promote_creators` (flips `candidate`→`tracked` when a creator's Wilson lower bound clears a threshold, default 0.5, with the same min-calls gate; called at the end of `backtest.py`), and `get_out_of_sample_validation` (per-creator temporal hold-out: oldest-half in-sample vs newest-half out-of-sample beat-SPY rates, to check ranking durability).
+- `storage.py` — upsert helpers and canned queries: top bullish/bearish tickers, ticker trend over time, creators mentioning a ticker, cross-creator consensus scores, reasons by ticker, per-creator backtest accuracy, the creator-screening leaderboard (`get_screening_leaderboard`: beat-SPY rate ranked by Wilson lower bound, with a min-calls eligibility gate), `promote_creators` (flips `candidate`→`tracked` when a creator's Wilson lower bound clears a threshold, default 0.5, with the same min-calls gate; called at the end of `backtest.py`), `get_out_of_sample_validation` (per-creator temporal hold-out: oldest-half in-sample vs newest-half out-of-sample beat-SPY rates, to check ranking durability), and `delete_creator` (destructive roster maintenance: removes a creator and all rows hanging off their videos, children-first in FK order; raises on a non-unique name).
 
 **main.py** — orchestrates the pipeline: for each channel, fetch recent videos, run `analyse_video()` per video which calls ingestion → NLP → storage in sequence. 5-second sleep between videos to avoid rate limits.
 
@@ -114,8 +114,13 @@ creators (id, channel_id UNIQUE, name, subscriber_count, status['candidate'|'tra
               populated offline by backfill_reasons.py; delete-then-insert per (video, ticker)
         └── backtest_results (id, video_id FK, ticker, horizon_days, call, return_pct, correct, benchmark_return_pct, beat_benchmark)
               UNIQUE(video_id, ticker, horizon_days) — populated by backtest.py, upserts on rerun
-        └── sentence_embeddings (id, segment_id FK → transcript_segments, embedding FLOAT[384])
-              UNIQUE(segment_id) — populated by backfill_embeddings.py for RAG retrieval
+
+# Separate file: db/embeddings.duckdb (gitignored, local-only — see db/init.py)
+sentence_embeddings (id, segment_id → transcript_segments.id, embedding FLOAT[384])
+  UNIQUE(segment_id) — populated by backfill_embeddings.py; rag.py ATTACHes this DB and
+  joins segment_id back to transcript_segments. Kept out of the main DB because the vectors
+  are ~50MB (pushed the committed DB past GitHub's 100MB limit) and the cloud deploy never
+  reads them. Regenerable; cross-file so there's no enforced FK.
 ```
 
 `directional_score` is signed: positive = bullish, negative = bearish (range roughly −1 to +1). `ticker_sentiments.label` and `score` reflect the per-video aggregate; `transcript_segments` stores one row per raw sentence for drill-down.

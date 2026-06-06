@@ -25,15 +25,19 @@ def root():
     return {"service": "FinSignal API", "version": "0.1.0"}
 
 @app.get("/consensus")
-def consensus(min_creators: int = Query(1, ge=1)):
-    return _records(storage.get_consensus_scores(min_creators=min_creators))
+def consensus(
+    min_creators: int = Query(1, ge=1),
+    half_life_days: float = Query(30.0, gt=0, description="Recency half-life for the score; older takes weigh less"),
+):
+    return _records(storage.get_consensus_scores(min_creators=min_creators, half_life_days=half_life_days))
 
 @app.get("/tickers/top")
 def top_tickers(
     direction: str = Query("bullish", pattern="^(bullish|bearish)$"),
     limit: int = Query(10, ge=1, le=100),
+    half_life_days: float = Query(30.0, gt=0, description="Recency half-life for the score; older takes weigh less"),
 ):
-    rows = storage.get_top_tickers(limit=limit, direction=direction)
+    rows = storage.get_top_tickers(limit=limit, direction=direction, half_life_days=half_life_days)
     return [{"ticker": t, "total_score": s, "video_count": v} for t, s, v in rows]
 
 @app.get("/tickers/{ticker}/trend")

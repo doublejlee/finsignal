@@ -5,9 +5,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# 8b-instant over 70b-versatile: extracting 3 short reason phrases is an easy task, and on
+# Groq's free tier 8b-instant has a much larger daily token budget (~500k TPD vs 70b's 100k)
+# in its own separate bucket — so the full backfill fits in a day. Swap back to
+# "llama-3.3-70b-versatile" if reason quality ever needs it.
+GROQ_MODEL = "llama-3.1-8b-instant"
+
 def summarise_reasons_with_llm(sentences: list, ticker: str) -> list:
     """Use Groq (Llama 3) to extract key reasons from sentences."""
-    text = "\n".join(sentences[:20])
+    text = "\n".join(sentences[:12])
 
     prompt = f"""These sentences are from finance YouTube videos discussing {ticker}.
 Extract exactly 3 short reasons (3-5 words each) that explain the sentiment.
@@ -25,7 +31,7 @@ Example output: ["AI datacenter demand", "strong margin expansion", "Blackwell c
             "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"
         },
         json={
-            "model": "llama-3.3-70b-versatile",
+            "model": GROQ_MODEL,
             "max_tokens": 200,
             "messages": [{"role": "user", "content": prompt}]
         }

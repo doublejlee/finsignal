@@ -35,7 +35,7 @@ def run():
 
     print("\nReading:")
     for _, r in df.iterrows():
-        verdict = "PERSISTED" if r["persisted"] else "DECAYED"
+        verdict = "PERSISTED" if r["persisted"] else "NOT PERSISTED"
         print(f"  [{verdict}] {r['creator']}: in-sample {r['in_sample_beat_pct']}% beat-SPY "
               f"({r['in_sample_calls']} calls) -> out-of-sample {r['oos_beat_pct']}% "
               f"({r['oos_calls']} calls), delta {r['delta_pct']:+}%")
