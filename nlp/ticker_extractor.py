@@ -60,6 +60,20 @@ def extract_tickers(text):
 
     return list(found)
 
+def sentence_mentions_ticker(sentence: str, ticker: str) -> bool:
+    """True if `sentence` directly references `ticker` — via $TICKER, or (for non-ambiguous
+    tickers) a word-boundary company-name match. Mirrors extract_tickers, so attribution
+    matches detection. Sentences pulled in only as ±1 context-window neighbors return False;
+    that's what stops RAG from citing a sentence under a ticker it isn't actually about.
+    """
+    if re.search(r'\$' + re.escape(ticker) + r'\b', sentence):
+        return True
+    if ticker in AMBIGUOUS_TICKERS:
+        return False
+    sentence_lower = sentence.lower()
+    return any(tick == ticker and re.search(r'\b' + re.escape(name) + r'\b', sentence_lower)
+               for name, tick in TICKER_DICT.items())
+
 if __name__ == "__main__":
     from ingestion.youtube_fetcher import get_transcript
     text = get_transcript("Hl8sgbmBF98")

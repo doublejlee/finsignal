@@ -25,7 +25,8 @@ if _latest:
 
 # Ask FinSignal (RAG)
 st.subheader("Ask FinSignal")
-st.caption("Ask in plain English — answered from creator transcripts, with sources")
+st.caption("Ask in plain English — retrieval is filtered by ticker/sentiment and weighted "
+           "by each creator's measured track record")
 question = st.text_input("e.g. Why is Netflix a good investment?", key="ask")
 if question:
     with st.spinner("Thinking..."):
@@ -35,7 +36,11 @@ if question:
             st.markdown(result["answer"])
             with st.expander(f"Sources ({len(result['citations'])})"):
                 for h in result["citations"]:
-                    st.markdown(f"**[{h['number']}]** {h['creator']} on **{h['ticker']}** — {h['sentence']}")
+                    track = (f" · _{h['creator_beat_spy']}% beat-SPY_"
+                             if h.get("creator_beat_spy") is not None else "")
+                    date = f" · {h['date']}" if h.get("date") else ""
+                    st.markdown(f"**[{h['number']}]** {h['creator']} on **{h['ticker']}**"
+                                f"{track}{date} — {h['sentence']}")
         except ImportError:
             st.info("Ask FinSignal runs locally only for now (the cloud deploy omits the embedding model).")
         except Exception as e:
@@ -78,16 +83,24 @@ else:
 
 st.divider()
 
-# Reasons behind sentiment
+# Reasons behind sentiment — grouped by stance so bullish/bearish drivers don't blur together
 st.subheader("Why? — Reasons Behind Sentiment")
 reasons_df = get_reasons_by_ticker()
 if reasons_df.empty:
     st.info("No reasons yet — run `python -m nlp.backfill_reasons` (VPN off)")
 else:
-    ticker = st.selectbox("Select a ticker", reasons_df["ticker"].tolist())
-    row = reasons_df[reasons_df["ticker"] == ticker].iloc[0]
-    for reason in row["reasons"].split(", "):
-        st.markdown(f"- {reason}")
+    reason_ticker = st.selectbox("Select a ticker", sorted(reasons_df["ticker"].unique()))
+    sub = reasons_df[reasons_df["ticker"] == reason_ticker]
+    for col, (stance, heading) in zip(st.columns(3),
+                                      [("bullish", "🟢 Bullish"), ("bearish", "🔴 Bearish"), ("neutral", "⚪ Neutral")]):
+        items = sub[sub["stance"] == stance]["reason"].tolist()
+        with col:
+            st.markdown(f"**{heading}**")
+            if items:
+                for r in items:
+                    st.markdown(f"- {r}")
+            else:
+                st.caption("—")
 
 st.divider()
 

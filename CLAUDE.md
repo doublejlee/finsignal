@@ -81,13 +81,13 @@ ingestion/ → nlp/ → db/ → (future) api/dashboard
 - `youtube_fetcher.py` — `youtube_transcript_api` to pull full transcript text for a video ID
 
 **nlp/**
-- `ticker_extractor.py` — two-pass extraction: regex `$TICKER` format, then company name dictionary lookup. Ambiguous names (e.g. "uber", "intel") are in `AMBIGUOUS_TICKERS` and require explicit `$TICKER` to match.
+- `ticker_extractor.py` — two-pass extraction: regex `$TICKER` format, then company name dictionary lookup. Ambiguous names (e.g. "uber", "intel") are in `AMBIGUOUS_TICKERS` and require explicit `$TICKER` to match. Also exports `sentence_mentions_ticker(sentence, ticker)` (same word-boundary logic), used by `store_transcript_segments` to flag `is_context` and by RAG to cite only genuine mentions.
 - `chunker.py` — spaCy `en_core_web_sm` splits transcript into sentences; `get_sentences_for_ticker()` returns sentences mentioning the ticker plus a ±1 context window.
 - `sentiment.py` — FinBERT (`ProsusAI/finbert`) scores each sentence; filters out sentences <8 words or confidence <0.6; applies recency weighting (`weight = 1 + 2*(i/n)`) so later sentences carry more influence.
 - `topic_model.py` — sends ticker-relevant sentences to Groq (Llama 3.3 70B) to extract 3 short reason phrases explaining the sentiment. Sentences with <8 words are filtered; fewer than 3 remaining returns `["insufficient data"]` without calling the API.
 - `backfill_reasons.py` — offline batch runner for `topic_model`. Reads sentences from `transcript_segments`, populates `ticker_reasons`, skips already-done pairs, sleeps 2s between calls for rate limits.
 - `backfill_embeddings.py` — embeds every `transcript_segments` sentence with `all-MiniLM-L6-v2` (normalized) into `sentence_embeddings`. Resumable. Local-only (needs torch).
-- `rag.py` — retrieval-augmented Q&A. `retrieve()` embeds the query, ranks stored sentences by cosine (brute force over all vectors, deduped by sentence), returns top-k; `answer()` feeds them to Groq for a grounded answer with inline citations. Query embedding uses sentence-transformers locally; Phase 4b will swap to a hosted embedding API so the cloud serving layer stays torch-free.
+- `rag.py` — retrieval-augmented Q&A. `retrieve()` is hybrid: it reads any ticker (`extract_tickers`) and bull/bear intent (`_query_polarity` → sentiment label) named in the question and pre-filters to that subset (relaxing progressively so it never returns nothing), then ranks by cosine × creator credibility (`_creator_credibility`: weight = 0.5 + Wilson-bound beat-SPY, so proven creators surface first), deduped by sentence and filtered to `is_context = FALSE`. Each hit carries the creator's beat-SPY track record and date, which `answer()` puts in the context so Groq can weight proven creators and recent takes; returns top-k; `answer()` feeds them to Groq for a grounded answer with inline citations. Query embedding goes through the HF Inference API (torch-free, so the cloud serving layer stays light), falling back to local sentence-transformers. Vectors live in the separate `db/embeddings.duckdb`, which `retrieve()` ATTACHes; absent on the cloud deploy, so retrieval there returns nothing and Ask degrades gracefully.
 
 **db/**
 - `init.py` — DuckDB schema (7 tables + indexes). DB file lives at `db/finsignal.duckdb`. Each function opens a new connection via `get_connection()`.
@@ -109,7 +109,9 @@ creators (id, channel_id UNIQUE, name, subscriber_count, status['candidate'|'tra
   └── videos (id, creator_id FK, video_id UNIQUE, title, published_at, created_at)
         └── ticker_sentiments (id, video_id FK, ticker, label, directional_score, sentence_count)
               UNIQUE(video_id, ticker) — upserts on reprocess
-        └── transcript_segments (id, video_id FK, ticker, sentence, label, score)
+        └── transcript_segments (id, video_id FK, ticker, sentence, label, score, is_context)
+              is_context=TRUE marks ±1 context-window neighbors that don't themselves mention
+              the ticker; RAG retrieves only is_context=FALSE so it never mis-cites them
         └── ticker_reasons (id, video_id FK, ticker, reason)
               populated offline by backfill_reasons.py; delete-then-insert per (video, ticker)
         └── backtest_results (id, video_id FK, ticker, horizon_days, call, return_pct, correct, benchmark_return_pct, beat_benchmark)

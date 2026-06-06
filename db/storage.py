@@ -112,32 +112,41 @@ def store_ticker_sentiment(video_id: int, ticker: str, label: str, directional_s
 def store_transcript_segments(video_id: int, ticker: str, sentences: list, label: str, score: float):
     """
     Store raw transcript segments.
-    sentences: list of sentence strings that mention the ticker
+    sentences: the ticker's relevant sentences (primary mentions + ±1 context neighbors).
+    Each row records is_context = it doesn't itself mention the ticker, so RAG can cite only
+    genuine mentions and never mislabel a neighbor sentence as being about this ticker.
     """
+    from nlp.ticker_extractor import sentence_mentions_ticker  # lightweight (regex only)
     conn = get_connection()
 
     for sentence in sentences:
+        is_context = not sentence_mentions_ticker(sentence, ticker)
         conn.execute(
             """
-            INSERT INTO transcript_segments (video_id, ticker, sentence, label, score)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO transcript_segments (video_id, ticker, sentence, label, score, is_context)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            [video_id, ticker, sentence, label, score]
+            [video_id, ticker, sentence, label, score, is_context]
         )
 
     conn.commit()
 
 def store_ticker_reasons(video_id: int, ticker: str, reasons: list):
-    """Store reason phrases for a ticker in a video. Replaces any existing reasons."""
+    """Store stance-labeled reasons for a ticker in a video. Replaces any existing reasons.
+
+    reasons: list of {"reason": str, "stance": "bullish"|"bearish"|"neutral"} (a bare string
+    is tolerated and stored as neutral, for backward compatibility).
+    """
     conn = get_connection()
     conn.execute(
         "DELETE FROM ticker_reasons WHERE video_id = ? AND ticker = ?",
         [video_id, ticker]
     )
-    for reason in reasons:
+    for r in reasons:
+        reason, stance = (r["reason"], r.get("stance", "neutral")) if isinstance(r, dict) else (r, "neutral")
         conn.execute(
-            "INSERT INTO ticker_reasons (video_id, ticker, reason) VALUES (?, ?, ?)",
-            [video_id, ticker, reason]
+            "INSERT INTO ticker_reasons (video_id, ticker, reason, stance) VALUES (?, ?, ?, ?)",
+            [video_id, ticker, reason, stance]
         )
     conn.commit()
 
@@ -372,17 +381,18 @@ def get_out_of_sample_validation(split_fraction: float = 0.5, min_per_split: int
     return df
 
 def get_reasons_by_ticker():
-    """Distinct reason phrases per ticker, aggregated across all videos."""
+    """Distinct stance-labeled reasons per ticker (one row per ticker/stance/reason).
+
+    The dashboard groups these into bullish / bearish / neutral columns. Reasons predating
+    the stance column (NULL) fall back to neutral so the panel never looks empty before a
+    re-run of backfill_reasons.
+    """
     conn = get_connection()
     return conn.execute("""
-        SELECT ticker, string_agg(reason, ', ') AS reasons
-        FROM (
-            SELECT DISTINCT ticker, reason
-            FROM ticker_reasons
-            WHERE reason <> 'insufficient data'
-        )
-        GROUP BY ticker
-        ORDER BY ticker
+        SELECT DISTINCT ticker, COALESCE(stance, 'neutral') AS stance, reason
+        FROM ticker_reasons
+        WHERE reason <> 'insufficient data'
+        ORDER BY ticker, stance, reason
     """).fetchdf()
 
 def get_top_tickers(limit: int = 10, direction: str = "bullish", half_life_days: float = 30.0) -> list:

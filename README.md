@@ -289,6 +289,19 @@ older than ~30 days can be evaluated. Most current data is recent, so early back
 results are concentrated on the creator with the oldest videos. Coverage grows
 naturally as videos age.
 
+### Phase 4 (RAG)
+
+**Problem: RAG cited sentences under the wrong ticker.**
+To capture sentiment, each ticker's stored sentences include a ±1 context window — the
+neighbors of every mention. Those neighbors were saved under the same ticker, so a
+sentence about Nvidia sitting next to a Google mention could surface in "Ask FinSignal"
+labeled *on GOOGL*.
+*Solution:* an `is_context` flag on `transcript_segments`, set at write time via
+`sentence_mentions_ticker()` (the same word-boundary logic as ticker extraction). RAG
+retrieves only `is_context = FALSE` rows, so it cites only sentences that genuinely name
+the ticker. On the current corpus that's 13,967 real mentions out of 33,497 stored
+sentences — the other 58% were context neighbors that could have been mis-cited.
+
 ---
 
 ## Known limitations
@@ -304,8 +317,3 @@ naturally as videos age.
   Phase 3.
 - **Small sample sizes** make per-ticker and per-creator metrics noisy until more
   videos are ingested.
-- **Context-window ticker misattribution in RAG citations.** The chunker stores ±1
-  neighboring sentences under the adjacent ticker, not the ticker the sentence is
-  actually about. A sentence clearly discussing Nvidia can surface in RAG labeled
-  "on GOOGL" if it happened to neighbor a Google mention. Fixing this requires an
-  `is_context` flag on `transcript_segments` to distinguish primary vs. context rows.

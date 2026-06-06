@@ -5,19 +5,22 @@ and writes results to ticker_reasons. Skips pairs that already have reasons, so
 reruns are cheap and resumable after a rate-limit or crash.
 """
 import time
-from db.init import get_connection
+from db.init import get_connection, init_schema
 from db.storage import store_ticker_reasons
 from nlp.topic_model import extract_reasons
 
 def backfill():
+    init_schema()  # idempotent — ensures the stance column exists
     conn = get_connection()
 
     pairs = conn.execute("""
         SELECT DISTINCT video_id, ticker FROM transcript_segments
     """).fetchall()
 
+    # A pair counts as done only once its reasons carry a stance, so reasons extracted
+    # before the stance column (stance IS NULL) get re-processed and labeled.
     done = set(conn.execute("""
-        SELECT DISTINCT video_id, ticker FROM ticker_reasons
+        SELECT DISTINCT video_id, ticker FROM ticker_reasons WHERE stance IS NOT NULL
     """).fetchall())
 
     todo = [p for p in pairs if p not in done]
@@ -33,7 +36,8 @@ def backfill():
         try:
             reasons = extract_reasons(sentences, ticker=ticker)
             store_ticker_reasons(video_id, ticker, reasons)
-            print(f"  {ticker} (video {video_id}): {', '.join(reasons)}")
+            print(f"  {ticker} (video {video_id}): " +
+                  ", ".join(f"{r['reason']} [{r['stance']}]" for r in reasons))
         except Exception as e:
             msg = str(e)
             print(f"  {ticker} (video {video_id}) FAILED: {e}")

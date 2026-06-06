@@ -11,18 +11,24 @@ load_dotenv()
 # "llama-3.3-70b-versatile" if reason quality ever needs it.
 GROQ_MODEL = "llama-3.1-8b-instant"
 
+_STANCES = ("bullish", "bearish", "neutral")
+
 def summarise_reasons_with_llm(sentences: list, ticker: str) -> list:
-    """Use Groq (Llama 3) to extract key reasons from sentences."""
+    """Use Groq to extract key drivers, each labeled with its stance toward the ticker.
+
+    Returns a list of {"reason": str, "stance": "bullish"|"bearish"|"neutral"}.
+    """
     text = "\n".join(sentences[:12])
 
     prompt = f"""These sentences are from finance YouTube videos discussing {ticker}.
-Extract exactly 3 short reasons (3-5 words each) that explain the sentiment.
-Return only a JSON array of 3 strings, nothing else.
+Extract exactly 3 short drivers (3-5 words each) behind the sentiment, and label each with
+its stance toward {ticker}: "bullish", "bearish", or "neutral".
+Return ONLY a JSON array of 3 objects, nothing else.
 
 Sentences:
 {text}
 
-Example output: ["AI datacenter demand", "strong margin expansion", "Blackwell chip cycle"]"""
+Example output: [{{"reason": "AI datacenter demand", "stance": "bullish"}}, {{"reason": "stretched valuation", "stance": "bearish"}}, {{"reason": "new CEO transition", "stance": "neutral"}}]"""
 
     response = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -32,7 +38,7 @@ Example output: ["AI datacenter demand", "strong margin expansion", "Blackwell c
         },
         json={
             "model": GROQ_MODEL,
-            "max_tokens": 200,
+            "max_tokens": 300,
             "messages": [{"role": "user", "content": prompt}]
         }
     )
@@ -41,16 +47,22 @@ Example output: ["AI datacenter demand", "strong margin expansion", "Blackwell c
     if "choices" not in data:
         raise RuntimeError(f"Groq error {response.status_code}: {data.get('error', data)}")
 
-    content = data["choices"][0]["message"]["content"]
-    reasons = json.loads(content)
-    return reasons[:3]
+    parsed = json.loads(data["choices"][0]["message"]["content"])
+    out = []
+    for item in parsed[:3]:
+        if isinstance(item, dict) and item.get("reason"):
+            stance = str(item.get("stance", "neutral")).lower().strip()
+            out.append({"reason": item["reason"], "stance": stance if stance in _STANCES else "neutral"})
+        elif isinstance(item, str):  # tolerate a model that ignored the schema
+            out.append({"reason": item, "stance": "neutral"})
+    return out
 
 def extract_reasons(sentences: list, ticker: str = "unknown") -> list:
-    """Extract reasons behind sentiment for a ticker."""
+    """Extract stance-labeled reasons behind sentiment for a ticker."""
     filtered = [s for s in sentences if len(s.split()) >= 8]
 
     if len(filtered) < 3:
-        return ["insufficient data"]
+        return [{"reason": "insufficient data", "stance": "neutral"}]
 
     return summarise_reasons_with_llm(filtered, ticker)
 
@@ -70,4 +82,4 @@ if __name__ == "__main__":
     reasons = extract_reasons(sentences, ticker="GOOGL")
     print("Reasons:")
     for r in reasons:
-        print(f"  - {r}")
+        print(f"  - {r['reason']} [{r['stance']}]")

@@ -136,6 +136,16 @@ def init_schema():
     if "status" not in _columns("creators"):
         conn.execute("ALTER TABLE creators ADD COLUMN status VARCHAR DEFAULT 'candidate'")
 
+    # is_context marks ±1 context-window neighbors (sentences that don't themselves mention
+    # the ticker) so RAG can cite only genuine mentions — see store_transcript_segments.
+    if "is_context" not in _columns("transcript_segments"):
+        conn.execute("ALTER TABLE transcript_segments ADD COLUMN is_context BOOLEAN DEFAULT FALSE")
+
+    # stance labels each reason bullish/bearish/neutral (topic_model). No default: existing
+    # rows stay NULL so backfill_reasons re-extracts them with a stance.
+    if "stance" not in _columns("ticker_reasons"):
+        conn.execute("ALTER TABLE ticker_reasons ADD COLUMN stance VARCHAR")
+
     backtest_cols = _columns("backtest_results")
     if "benchmark_return_pct" not in backtest_cols:
         conn.execute("ALTER TABLE backtest_results ADD COLUMN benchmark_return_pct FLOAT")
