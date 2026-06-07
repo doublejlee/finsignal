@@ -195,6 +195,78 @@ def get_consensus_scores(min_creators: int = 1, half_life_days: float = 30.0):
         ORDER BY ABS(avg_score) DESC
     """, [min_creators]).fetchdf()
 
+def get_smart_money_view(half_life_days: float = 30.0, min_creators: int = 2,
+                         min_calls: int = MIN_ELIGIBLE_CALLS, min_beat_pct: float = 50.0):
+    """Where the proven creators disagree with the crowd, per ticker.
+
+    A creator is "proven" if they have ≥ min_calls benchmark-scored calls AND beat SPY on more
+    than min_beat_pct of them — i.e. they cleared the screen, not just got evaluated.
+
+    crowd_score        = recency-weighted mean directional score over ALL creators.
+    smart_money_score  = the same over proven creators only.
+    divergence         = smart − crowd: positive ⇒ proven creators are more bullish than the
+                         crowd, negative ⇒ more bearish.
+
+    Only tickers covered by ≥ min_creators total and ≥1 proven creator are returned (a
+    divergence needs both sides defined). Sorted by |divergence| so the sharpest disagreements
+    surface first. This is the "stop averaging everyone equally" view — what do the voices
+    with an actual track record think, and where does that part from the noise.
+    """
+    conn = get_connection()
+
+    proven = set()
+    for name, n, beats in conn.execute("""
+        SELECT cr.name,
+               COUNT(b.id) FILTER (WHERE b.beat_benchmark IS NOT NULL) AS n,
+               COALESCE(SUM(CASE WHEN b.beat_benchmark THEN 1 ELSE 0 END), 0) AS beats
+        FROM creators cr
+        LEFT JOIN videos v ON v.creator_id = cr.id
+        LEFT JOIN backtest_results b ON b.video_id = v.id
+        GROUP BY cr.name
+    """).fetchall():
+        n = int(n or 0)
+        if n >= min_calls and 100.0 * int(beats or 0) / n > min_beat_pct:
+            proven.add(name)
+
+    w = _recency_weight_sql(half_life_days)
+    rows = conn.execute(f"""
+        SELECT ts.ticker, c.name, ts.directional_score, ({w}) AS rw
+        FROM ticker_sentiments ts
+        JOIN videos v ON ts.video_id = v.id
+        JOIN creators c ON v.creator_id = c.id
+    """).fetchall()
+
+    agg = {}
+    for ticker, name, score, rw in rows:
+        a = agg.setdefault(ticker, {"cw": 0.0, "cws": 0.0, "sw": 0.0, "sws": 0.0,
+                                    "creators": set(), "smart_creators": set()})
+        a["cw"] += rw;  a["cws"] += rw * score
+        a["creators"].add(name)
+        if name in proven:
+            a["sw"] += rw;  a["sws"] += rw * score
+            a["smart_creators"].add(name)
+
+    records = []
+    for ticker, a in agg.items():
+        if len(a["creators"]) < min_creators or not a["smart_creators"] or a["cw"] == 0:
+            continue
+        crowd = a["cws"] / a["cw"]
+        smart = a["sws"] / a["sw"]
+        records.append({
+            "ticker": ticker,
+            "crowd_score": round(crowd, 3),
+            "smart_money_score": round(smart, 3),
+            "divergence": round(smart - crowd, 3),
+            "smart_creators": len(a["smart_creators"]),
+            "total_creators": len(a["creators"]),
+        })
+
+    df = pd.DataFrame(records, columns=["ticker", "crowd_score", "smart_money_score",
+                                        "divergence", "smart_creators", "total_creators"])
+    if not df.empty:
+        df = df.reindex(df["divergence"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+    return df
+
 def store_backtest_result(video_id: int, ticker: str, horizon_days: int, call: str, return_pct: float, correct: bool,
                           benchmark_return_pct: float = None, beat_benchmark: bool = None):
     """Store one backtested call. Upserts on (video_id, ticker, horizon_days)."""
@@ -381,18 +453,20 @@ def get_out_of_sample_validation(split_fraction: float = 0.5, min_per_split: int
     return df
 
 def get_reasons_by_ticker():
-    """Distinct stance-labeled reasons per ticker (one row per ticker/stance/reason).
+    """Stance-labeled reasons per ticker with a mention count (rows: ticker/stance/reason/mentions).
 
-    The dashboard groups these into bullish / bearish / neutral columns. Reasons predating
-    the stance column (NULL) fall back to neutral so the panel never looks empty before a
-    re-run of backfill_reasons.
+    `mentions` = how many videos cited that reason for the ticker, so the dashboard can rank by
+    frequency and cap to the top few — the consensus drivers rise, the long tail of near-duplicate
+    one-off phrasings drops off. Reasons predating the stance column (NULL) fall back to neutral so
+    the panel isn't empty before a re-run of backfill_reasons.
     """
     conn = get_connection()
     return conn.execute("""
-        SELECT DISTINCT ticker, COALESCE(stance, 'neutral') AS stance, reason
+        SELECT ticker, COALESCE(stance, 'neutral') AS stance, reason, COUNT(*) AS mentions
         FROM ticker_reasons
         WHERE reason <> 'insufficient data'
-        ORDER BY ticker, stance, reason
+        GROUP BY ticker, COALESCE(stance, 'neutral'), reason
+        ORDER BY ticker, stance, mentions DESC, reason
     """).fetchdf()
 
 def get_top_tickers(limit: int = 10, direction: str = "bullish", half_life_days: float = 30.0) -> list:

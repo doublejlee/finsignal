@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 from db.init import get_connection
 from db.storage import (get_consensus_scores, get_top_tickers, get_reasons_by_ticker,
-                        get_creator_accuracy, get_screening_leaderboard)
+                        get_creator_accuracy, get_screening_leaderboard, get_smart_money_view)
 
 st.set_page_config(page_title="FinSignal", layout="wide")
 st.title("FinSignal — Financial Sentiment Dashboard")
@@ -71,6 +71,25 @@ else:
 
 st.divider()
 
+# Smart money vs the crowd — where creators with a track record disagree with everyone
+st.subheader("Smart Money vs The Crowd")
+st.caption("**Crowd** = all creators. **Smart money** = only those who beat SPY on ≥30 evaluated "
+           f"calls. **Divergence** = smart − crowd (recency-weighted, {HALF_LIFE}-day half-life). "
+           "Positive = proven creators more bullish than the crowd; negative = more bearish.")
+smart = get_smart_money_view(half_life_days=HALF_LIFE)
+if smart.empty:
+    st.info("Not enough backtested creators yet — run `python backtest.py` on more history")
+else:
+    st.dataframe(smart, use_container_width=True)
+    top = smart.iloc[0]
+    direction = "more bullish" if top["divergence"] > 0 else "more bearish"
+    st.caption(f"Sharpest divergence: on **{top['ticker']}**, the {top['smart_creators']} proven "
+               f"creator(s) are **{direction}** than the crowd "
+               f"({top['smart_money_score']:+} vs {top['crowd_score']:+}). "
+               "A single proven creator (smart_creators=1) is thin — read with care.")
+
+st.divider()
+
 # Consensus scores
 st.subheader("Consensus Scores")
 st.caption(f"Aggregated across all creators, recency-weighted ({HALF_LIFE}-day half-life) — "
@@ -89,16 +108,19 @@ reasons_df = get_reasons_by_ticker()
 if reasons_df.empty:
     st.info("No reasons yet — run `python -m nlp.backfill_reasons` (VPN off)")
 else:
+    st.caption("Top drivers by how many videos cited them — the most-mentioned themes, not every phrasing.")
     reason_ticker = st.selectbox("Select a ticker", sorted(reasons_df["ticker"].unique()))
     sub = reasons_df[reasons_df["ticker"] == reason_ticker]
+    TOP_N = 6
     for col, (stance, heading) in zip(st.columns(3),
                                       [("bullish", "🟢 Bullish"), ("bearish", "🔴 Bearish"), ("neutral", "⚪ Neutral")]):
-        items = sub[sub["stance"] == stance]["reason"].tolist()
+        items = sub[sub["stance"] == stance].sort_values("mentions", ascending=False).head(TOP_N)
         with col:
             st.markdown(f"**{heading}**")
-            if items:
-                for r in items:
-                    st.markdown(f"- {r}")
+            if not items.empty:
+                for _, row in items.iterrows():
+                    suffix = f" ·{row['mentions']}×" if row["mentions"] > 1 else ""
+                    st.markdown(f"- {row['reason']}{suffix}")
             else:
                 st.caption("—")
 
