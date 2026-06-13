@@ -1,0 +1,6 @@
+# Test/CI dependencies — just what the unit tests import (the pure logic + DuckDB layer).
+# The full ML/ingestion stack (torch, spaCy, transformers) is not needed to run the suite.
+pytest==8.4.2
+duckdb==1.5.3
+pandas==3.0.3
+numpy==2.3.4

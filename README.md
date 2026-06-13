@@ -1,5 +1,7 @@
 # FinSignal
 
+[![CI](https://github.com/doublejlee/finsignal/actions/workflows/ci.yml/badge.svg)](https://github.com/doublejlee/finsignal/actions/workflows/ci.yml)
+
 AI-powered financial sentiment intelligence platform. FinSignal aggregates
 finance-YouTube creator opinions, performs **sentence-level** sentiment
 attribution using FinBERT, explains *why* each stock is bullish or bearish via

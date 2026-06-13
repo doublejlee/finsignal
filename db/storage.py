@@ -1,4 +1,4 @@
-from db.init import get_connection
+from db.init import get_connection, get_embeddings_connection, EMBEDDINGS_DB_PATH
 from datetime import datetime
 import math
 import pandas as pd
@@ -36,11 +36,12 @@ def get_or_create_creator(channel_id: str, name: str, subscriber_count: int = No
 def delete_creator(name: str) -> dict:
     """Delete a creator and all rows that hang off them, children-first (DuckDB enforces FKs).
 
-    Cascade: sentence_embeddings -> transcript_segments / ticker_sentiments / ticker_reasons /
-    backtest_results (all keyed on the creator's videos) -> videos -> the creator row.
-    Matches on exact creator name; raises if it isn't unique so a typo can't wipe the wrong
-    creator. Returns per-table delete counts. Destructive — the DB is in git, so a bad call
-    is recoverable from history.
+    Cascade in the main DB: transcript_segments / ticker_sentiments / ticker_reasons /
+    backtest_results (all keyed on the creator's videos) -> videos -> the creator row. The
+    creator's sentence_embeddings live in the separate, local-only embeddings DB and are pruned
+    there if it's present (absent on the cloud deploy). Matches on exact creator name; raises if
+    it isn't unique so a typo can't wipe the wrong creator. Returns a small summary. Destructive
+    — the DB is in git, so a bad call is recoverable from history.
     """
     conn = get_connection()
     ids = conn.execute("SELECT id FROM creators WHERE name = ?", [name]).fetchall()
@@ -53,18 +54,23 @@ def delete_creator(name: str) -> dict:
     video_ids = [r[0] for r in conn.execute(
         "SELECT id FROM videos WHERE creator_id = ?", [creator_id]).fetchall()]
 
-    deleted = {}
+    segment_ids = []
     if video_ids:
         placeholders = ",".join("?" * len(video_ids))
-        deleted["sentence_embeddings"] = conn.execute(
-            f"DELETE FROM sentence_embeddings WHERE segment_id IN "
-            f"(SELECT id FROM transcript_segments WHERE video_id IN ({placeholders}))",
-            video_ids).fetchall()
+        segment_ids = [r[0] for r in conn.execute(
+            f"SELECT id FROM transcript_segments WHERE video_id IN ({placeholders})", video_ids).fetchall()]
         for tbl in ["transcript_segments", "ticker_sentiments", "ticker_reasons", "backtest_results"]:
             conn.execute(f"DELETE FROM {tbl} WHERE video_id IN ({placeholders})", video_ids)
     conn.execute("DELETE FROM videos WHERE creator_id = ?", [creator_id])
     conn.execute("DELETE FROM creators WHERE id = ?", [creator_id])
     conn.commit()
+
+    # Embeddings live in a separate, gitignored DB (regenerable, absent on cloud) — prune there.
+    if segment_ids and EMBEDDINGS_DB_PATH.exists():
+        emb = get_embeddings_connection()
+        ph = ",".join("?" * len(segment_ids))
+        emb.execute(f"DELETE FROM sentence_embeddings WHERE segment_id IN ({ph})", segment_ids)
+        emb.commit()
 
     return {"creator": name, "creator_id": creator_id, "videos_deleted": len(video_ids)}
 
