@@ -4,11 +4,15 @@ AI-powered financial sentiment intelligence platform. FinSignal aggregates
 finance-YouTube creator opinions, performs **sentence-level** sentiment
 attribution using FinBERT, explains *why* each stock is bullish or bearish via
 LLM-extracted reasons, and **backtests each creator's track record** against real
-price movement.
+price movement — then screens for the few creators whose calls actually beat the market.
+
+![Following the screened "proven" creators vs the S&P 500](assets/equity_curve.png)
+
+<sub>Backtested return of acting on the *screened* creators' bullish calls vs holding SPY — illustrative, see [Results](#results-does-the-signal-actually-hold-up) for methodology and caveats.</sub>
 
 ## Live demo
 - **API:** https://finsignal-api.onrender.com ([interactive docs](https://finsignal-api.onrender.com/docs)) — Render free tier, first request may cold-start (~30s)
-- **Dashboard:** _Streamlit Community Cloud (add link)_
+- **Dashboard:** https://finsignal-xrfybejcewfdbtnjumcckb.streamlit.app/ — Streamlit Community Cloud
 
 ---
 
