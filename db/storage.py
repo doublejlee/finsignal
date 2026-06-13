@@ -2,6 +2,7 @@ from db.init import get_connection
 from datetime import datetime
 import math
 import pandas as pd
+import numpy as np
 
 MIN_ELIGIBLE_CALLS = 30
 
@@ -195,6 +196,91 @@ def get_consensus_scores(min_creators: int = 1, half_life_days: float = 30.0):
         ORDER BY ABS(avg_score) DESC
     """, [min_creators]).fetchdf()
 
+def _proven_creators(conn, min_calls: int = MIN_ELIGIBLE_CALLS, min_beat_pct: float = 50.0) -> set:
+    """Creators who cleared the screen: ≥ min_calls benchmark-scored calls AND beat SPY on more
+    than min_beat_pct of them (evaluated AND good — not merely evaluated)."""
+    proven = set()
+    for name, n, beats in conn.execute("""
+        SELECT cr.name,
+               COUNT(b.id) FILTER (WHERE b.beat_benchmark IS NOT NULL) AS n,
+               COALESCE(SUM(CASE WHEN b.beat_benchmark THEN 1 ELSE 0 END), 0) AS beats
+        FROM creators cr
+        LEFT JOIN videos v ON v.creator_id = cr.id
+        LEFT JOIN backtest_results b ON b.video_id = v.id
+        GROUP BY cr.name
+    """).fetchall():
+        n = int(n or 0)
+        if n >= min_calls and 100.0 * int(beats or 0) / n > min_beat_pct:
+            proven.add(name)
+    return proven
+
+def get_strategy_performance(min_calls: int = MIN_ELIGIBLE_CALLS, min_beat_pct: float = 50.0):
+    """Simulate 'follow the proven creators' and compare the equity curve to holding SPY.
+
+    Strategy: each month, equal-weight every BULLISH call a proven creator (_proven_creators)
+    made that month, hold the 30-day horizon, and take the average return — then compound those
+    monthly cohort returns. The benchmark compounds the average SPY return over the same windows.
+    Returns (monthly_df, metrics); monthly_df has month, n_trades, the cohort returns, and the
+    running `strategy` / `spy` equity (both start at 1.0).
+
+    Why monthly cohorts and long-only: compounding 240 *overlapping* 30-day trades one after
+    another massively overstates returns (you can't reinvest the same dollar 240 times in 9
+    months); a monthly-rebalanced cohort is the standard, honest way to turn point-to-point
+    trade returns into an equity curve. Bearish calls are excluded — shorting single stocks is
+    unrealistic for a 'follow the creators' story and blows up on outliers. Still simplified
+    (equal weight, no costs); illustrative of edge, not a live P&L. A backtest is never
+    recency-decayed.
+    """
+    conn = get_connection()
+    proven = _proven_creators(conn, min_calls, min_beat_pct)
+    if not proven:
+        return pd.DataFrame(), {}
+
+    placeholders = ",".join(["?"] * len(proven))
+    rows = conn.execute(f"""
+        SELECT strftime(v.published_at, '%Y-%m') AS month, b.return_pct, b.benchmark_return_pct
+        FROM backtest_results b
+        JOIN videos v ON b.video_id = v.id
+        JOIN creators c ON v.creator_id = c.id
+        WHERE b.benchmark_return_pct IS NOT NULL AND b.call = 'bullish'
+          AND c.name IN ({placeholders})
+        ORDER BY month
+    """, list(proven)).fetchall()
+    if not rows:
+        return pd.DataFrame(), {}
+
+    by_month = {}
+    for month, ret, bench in rows:
+        by_month.setdefault(month, []).append((ret / 100.0, bench / 100.0))
+
+    recs, strat_eq, spy_eq = [], 1.0, 1.0
+    all_trade_rets = []
+    for month in sorted(by_month):
+        trades = by_month[month]
+        all_trade_rets += [t[0] for t in trades]
+        strat_m = sum(t[0] for t in trades) / len(trades)
+        spy_m = sum(t[1] for t in trades) / len(trades)
+        strat_eq *= (1 + strat_m)
+        spy_eq *= (1 + spy_m)
+        recs.append({"month": month, "n_trades": len(trades),
+                     "strat_ret": round(strat_m, 4), "spy_ret": round(spy_m, 4),
+                     "strategy": strat_eq, "spy": spy_eq})
+
+    df = pd.DataFrame(recs)
+    eq = df["strategy"].to_numpy()
+    peak = np.maximum.accumulate(eq)
+    tr = np.array(all_trade_rets)
+    metrics = {
+        "trades": len(all_trade_rets),
+        "months": len(df),
+        "strategy_return_pct": round(100 * (eq[-1] - 1), 1),
+        "spy_return_pct": round(100 * (df["spy"].iloc[-1] - 1), 1),
+        "win_rate_pct": round(100 * float((tr > 0).mean()), 1),
+        "avg_trade_pct": round(100 * float(tr.mean()), 2),
+        "max_drawdown_pct": round(100 * float(((eq - peak) / peak).min()), 1),
+    }
+    return df, metrics
+
 def get_smart_money_view(half_life_days: float = 30.0, min_creators: int = 2,
                          min_calls: int = MIN_ELIGIBLE_CALLS, min_beat_pct: float = 50.0):
     """Where the proven creators disagree with the crowd, per ticker.
@@ -213,20 +299,7 @@ def get_smart_money_view(half_life_days: float = 30.0, min_creators: int = 2,
     with an actual track record think, and where does that part from the noise.
     """
     conn = get_connection()
-
-    proven = set()
-    for name, n, beats in conn.execute("""
-        SELECT cr.name,
-               COUNT(b.id) FILTER (WHERE b.beat_benchmark IS NOT NULL) AS n,
-               COALESCE(SUM(CASE WHEN b.beat_benchmark THEN 1 ELSE 0 END), 0) AS beats
-        FROM creators cr
-        LEFT JOIN videos v ON v.creator_id = cr.id
-        LEFT JOIN backtest_results b ON b.video_id = v.id
-        GROUP BY cr.name
-    """).fetchall():
-        n = int(n or 0)
-        if n >= min_calls and 100.0 * int(beats or 0) / n > min_beat_pct:
-            proven.add(name)
+    proven = _proven_creators(conn, min_calls, min_beat_pct)
 
     w = _recency_weight_sql(half_life_days)
     rows = conn.execute(f"""

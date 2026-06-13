@@ -105,6 +105,26 @@ upload).
 
 > Regenerate the figure from the live DB: `python assets/make_screening_chart.py`
 
+### Following the proven creators — does the edge translate to returns?
+
+Beat-SPY *rate* is one thing; **money** is another. This simulates acting on every bullish
+call from the proven creators (those who cleared the screen), equal-weighted in monthly
+cohorts, 30-day hold, vs simply holding SPY over the same windows.
+
+![Following the proven creators vs holding SPY](assets/equity_curve.png)
+
+Over 153 bullish calls across 11 months, the strategy returned **+28.3% vs SPY's +17.3%**
+— win rate **66%**, max drawdown **−10.1%**.
+
+**Honest caveats (this is illustrative, not a tradable P&L):** monthly-cohort returns are
+compounded — not 240 overlapping trades chained sequentially, which would massively
+overstate returns; long-only, because shorting single stocks is unrealistic and blows up on
+outliers; no transaction costs or slippage; and 11 months is a short, in-sample window. The
+point isn't "+11% alpha" — it's that the screen identifies creators whose calls, acted on
+simply, would have tracked *above* the benchmark rather than below it.
+
+> Regenerate from the live DB: `python assets/make_equity_curve.py`
+
 ---
 
 ## Setup

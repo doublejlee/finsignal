@@ -6,7 +6,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 from db.init import get_connection
 from db.storage import (get_consensus_scores, get_top_tickers, get_reasons_by_ticker,
-                        get_creator_accuracy, get_screening_leaderboard, get_smart_money_view)
+                        get_creator_accuracy, get_screening_leaderboard, get_smart_money_view,
+                        get_strategy_performance)
 
 st.set_page_config(page_title="FinSignal", layout="wide")
 st.title("FinSignal — Financial Sentiment Dashboard")
@@ -68,6 +69,27 @@ if screening.empty:
     st.info("No screening data yet — run `python backtest.py`")
 else:
     st.dataframe(screening, use_container_width=True)
+
+st.divider()
+
+# Following the proven creators — the backtested payoff of the screen
+st.subheader("Following the Proven Creators (backtest)")
+st.caption("Equal-weight every non-neutral call from proven creators (long bull / short bear, "
+           "30-day hold), compounded vs holding SPY over the same windows. Illustrative — "
+           "no transaction costs, overlapping windows.")
+edf, em = get_strategy_performance()
+if edf.empty:
+    st.info("Not enough backtested creators yet — run `python backtest.py` on more history")
+else:
+    curve = edf[["month", "strategy", "spy"]].copy()
+    curve["month"] = pd.to_datetime(curve["month"])
+    curve = curve.set_index("month").rename(columns={"strategy": "Follow proven creators", "spy": "Hold SPY"})
+    st.line_chart(curve)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Strategy return", f"{em['strategy_return_pct']:+}%", f"{em['strategy_return_pct'] - em['spy_return_pct']:+.1f}% vs SPY")
+    m2.metric("SPY return", f"{em['spy_return_pct']:+}%")
+    m3.metric("Win rate", f"{em['win_rate_pct']}%", f"{em['trades']} trades")
+    m4.metric("Max drawdown", f"{em['max_drawdown_pct']}%")
 
 st.divider()
 
